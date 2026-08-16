@@ -273,6 +273,7 @@ cmd_logs() {
   done
   if [ -f "$LOG_FILE" ]; then target="$LOG_FILE"; fi
   if [ -z "$target" ]; then
+    # shellcheck disable=SC2012 # 需按 mtime 取最新日志(BSD find 无 -printf,ls -t 是 macOS 上的标准做法)
     target="$(ls -t "$LOG_DIR"/dsh-*.log 2>/dev/null | head -1 || true)"
   fi
   if [ -z "$target" ] || [ ! -f "$target" ]; then

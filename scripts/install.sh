@@ -10,6 +10,7 @@ echo "✓ dshctl 已安装到 $BIN_DIR/dshctl"
 case ":$PATH:" in
   *":$BIN_DIR:"*) ;;
   *) printf '提示: %s 不在 PATH,请执行:\n' "$BIN_DIR"
+     # shellcheck disable=SC2016 # 有意保留字面 $PATH,让用户自己的 shell 展开
      printf '  echo '\''export PATH="%s:$PATH"'\'' >> ~/.zshrc\n' "$BIN_DIR"
      ;;
 esac
