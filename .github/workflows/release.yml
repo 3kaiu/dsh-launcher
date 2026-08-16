@@ -1,0 +1,29 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: 构建并发布 GitHub Release
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: 构建发布包
+        run: bash scripts/build-app.sh "${GITHUB_REF_NAME#v}"
+      - name: 发布到 GitHub Releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd dist
+          VERSION="${GITHUB_REF_NAME#v}"
+          gh release create "$GITHUB_REF_NAME" \
+            "dsh-launcher-macos-${VERSION}.zip" SHA256SUMS.txt \
+            --title "dsh-launcher $GITHUB_REF_NAME" \
+            --generate-notes || true
