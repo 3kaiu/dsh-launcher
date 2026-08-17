@@ -56,23 +56,21 @@ Workspace / Sessions / Plugins),Web UI 本身就是按 PWA 方向设计的:Safar
 
 ## 快速开始(下载即用,零配置)
 
-### 方式 A:下载 Release 包(推荐)
+### 方式 A:双击 App(推荐,零命令)
 
-1. 从 [Releases](../../releases) 下载 `dshctl-macos-<arm64|x64>-<版本>.zip`(包内自带 node 二进制,无需安装任何东西);
-2. 解压,然后:
+1. 从 [Releases](../../releases) 下载 `dsh-launcher-<版本>.dmg`(81 KB);
+2. 双击 dmg → 把 **DeepSeek Harness Launcher** 拖进「应用程序」;
+3. **双击 App 图标**(首次会自动下载最新 node + 官方 dsh,约 1 分钟)→ Safari 自动打开;
+4. Safari → 文件 → 添加到程序坞 → 之后从 Dock 全屏打开(日常入口)。
 
-```bash
-./dshctl start     # 全部自动:查询上游最新 node/dsh → 安装 → 启动 → 打开浏览器
-# Safari 打开 http://127.0.0.1:3080 完成模型 / API Key 配置
-# Safari → 文件 → 添加到程序坞 → 之后从 Dock 全屏打开
-```
+> App 双击 = 自动执行 `dshctl start`:检查上游最新 → 需要时升级 → 启动 → 打开。
+> 每次双击都会自动跟随上游最新版本,无需手动更新。
 
-(可选)安装到 PATH 与自启:
+### 方式 B:命令行版(可选)
 
-```bash
-./install.sh       # 装到 ~/.local/share/dsh-launcher + ~/.local/bin/dshctl
-dshctl watch       # 崩溃自愈(可选,前台守护)
-```
+1. 下载 `dshctl-<版本>.zip`(11 KB)并解压;
+2. `./dshctl start`(全自动);`./dshctl stop` 停止;
+3. (可选)`./install.sh` 装到 PATH,此后任意目录 `dshctl start`。
 
 ### 方式 B:从源码构建
 
@@ -82,7 +80,7 @@ cd dsh-launcher
 npm i               # typescript(devDep)
 npm test            # 单测(node --test,原生 TS)
 npx tsc --noEmit    # 类型检查
-node scripts/release.ts dev arm64   # 构建便携包 → dist/dshctl-macos-arm64-dev.zip
+node scripts/release.ts dev        # 构建 → dist/dshctl-dev.zip + dsh-launcher-dev.dmg
 bash scripts/smoke-test.sh          # 集成冒烟(真实安装上游最新 node+dsh)
 ```
 
@@ -116,6 +114,6 @@ test/versions.test.mjs # 单测(node --test)
 launchd/             # (可选)登录自启模板
 ```
 
-> 注:菜单栏 App(app/)源码保留但构建暂缓;便携包 dshctl 是当前推荐的唯一入口。
+> 注:菜单栏 App(app/)源码保留但构建暂缓;当前推荐入口为 dmg 双击版或命令行 dshctl。
 
 详见 [docs/pwa-setup.md](docs/pwa-setup.md)。
