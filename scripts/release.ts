@@ -39,7 +39,6 @@ for (const [src, dst] of [
 }
 writeFileSync(join(stage, "dshctl"), readFileSync(join(root, "scripts", "wrapper.sh")));
 writeFileSync(join(stage, "install.sh"), readFileSync(join(root, "scripts", "install.sh")));
-writeFileSync(join(stage, "README.md"), readFileSync(join(root, "README.md")));
 sh("chmod", ["+x", join(stage, "dshctl")]);
 sh("bash", ["-lc", "cd dist/stage && zip -qr ../dshctl-" + version + ".zip ."]);
 
