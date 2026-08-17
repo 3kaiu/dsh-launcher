@@ -11,40 +11,34 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  lint:
-    name: Lint (shellcheck)
+  check:
+    name: 类型检查 + 单测 (TypeScript)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: 安装 shellcheck
-        run: sudo apt-get update && sudo apt-get install -y shellcheck
-      - name: bash 语法检查
-        run: bash -n dshctl scripts/*.sh
-      - name: shellcheck
-        run: shellcheck dshctl scripts/*.sh
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: 依赖(typescript + esbuild)
+        run: npm i -g typescript@^5.6 esbuild
+      - name: TS 类型检查
+        run: tsc --noEmit
+      - name: 单测(node --test,原生 TS)
+        run: node --test test/versions.test.mjs
 
   integration:
-    name: 集成冒烟(真实安装 Node + dsh)
+    name: 集成冒烟(便携包真实安装上游最新 node + dsh)
     runs-on: macos-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - name: 冒烟测试
-        run: bash scripts/smoke-test.sh
-
-  build-app:
-    name: 构建菜单栏 App
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: 构建发布包
-        run: bash scripts/build-app.sh ci
-      - name: 校验 .app 产物
-        run: |
-          test -d "dist/dsh-launcher-macos-ci/DeepSeek Harness Launcher.app"
-          test -x "dist/dsh-launcher-macos-ci/DeepSeek Harness Launcher.app/Contents/MacOS/DShLauncher"
-          test -f "dist/dsh-launcher-macos-ci.zip"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/setup-node@v4
         with:
-          name: dsh-launcher-macos-ci
-          path: dist/
+          node-version: 24
+      - name: 构建便携包
+        run: |
+          npm i -g esbuild
+          node scripts/release.ts ci arm64
+      - name: 冒烟测试(动态版本:node 最新 LTS + dsh latest)
+        run: bash scripts/smoke-test.sh dist/stage-arm64/dshctl
+

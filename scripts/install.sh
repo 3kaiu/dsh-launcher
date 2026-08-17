@@ -1,23 +1,33 @@
 #!/usr/bin/env bash
 set -euo pipefail
-# 安装 dsh-launcher:把 dshctl 安装到 ~/.local/bin
-# 用法: bash scripts/install.sh(仓库内)或 ./install.sh(release 包内)
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# 安装 dshctl 便携包:包 → ~/.local/share/dsh-launcher/,dshctl → ~/.local/bin
+# 用法: ./install.sh(包根内)或 bash scripts/install.sh(仓库内,构建后)
+SRC="$(cd "$(dirname "$0")" && pwd)"
+# 仓库内运行时定位 dist/stage-*
+if [ -d "$SRC/../dist" ]; then
+  STAGE="$(ls -d "$SRC"/../dist/stage-* 2>/dev/null | head -1 || true)"
+  [ -n "$STAGE" ] && [ -x "$STAGE/dshctl" ] && SRC="$STAGE"
+fi
+[ -x "$SRC/dshctl" ] || { echo "找不到便携包 dshctl(先运行 node scripts/release.ts)" >&2; exit 1; }
+DEST="${DSH_LAUNCHER_DIR:-$HOME/.local/share/dsh-launcher}"
 BIN_DIR="${DSH_LAUNCHER_BIN_DIR:-$HOME/.local/bin}"
-mkdir -p "$BIN_DIR"
-install -m 0755 "$ROOT/dshctl" "$BIN_DIR/dshctl"
-echo "✓ dshctl 已安装到 $BIN_DIR/dshctl"
+mkdir -p "$DEST" "$BIN_DIR"
+rm -rf "$DEST/node" "$DEST/dshctl.mjs" "$DEST/dshctl"
+cp -R "$SRC/node" "$DEST/"
+cp "$SRC/dshctl.mjs" "$SRC/dshctl" "$DEST/"
+chmod +x "$DEST/dshctl"
+ln -sf "$DEST/dshctl" "$BIN_DIR/dshctl"
+echo "✓ dshctl 已安装: $BIN_DIR/dshctl (运行时: $DEST)"
 case ":$PATH:" in
-  *":$BIN_DIR:"*) ;;
-  *) printf '提示: %s 不在 PATH,请执行:\n' "$BIN_DIR"
-     # shellcheck disable=SC2016 # 有意保留字面 $PATH,让用户自己的 shell 展开
-     printf '  echo '\''export PATH="%s:$PATH"'\'' >> ~/.zshrc\n' "$BIN_DIR"
-     ;;
+  *":$PATH:"*) ;;
+  *) printf '提示: %s 不在 PATH,请执行:
+  echo '\''export PATH="%s:$PATH"'\'' >> ~/.zshrc
+' "$BIN_DIR" "$BIN_DIR" ;;
 esac
 echo ""
 echo "下一步:"
-echo "  1) dshctl start              # 首次自动安装 Node 24 LTS + 官方 dsh 并启动"
-echo "  2) Safari 打开 http://127.0.0.1:3080 完成首次配置(API Key)"
-echo "  3) Safari → 文件 → 添加到程序坞,以后从 Dock 全屏打开 (docs/pwa-setup.md)"
-echo "  4) dshctl open               # 一键:确保运行中 + 打开 PWA"
-echo "  5) (可选) dshctl agent-install   # 登录自启 + 崩溃自愈"
+echo "  1) dshctl start     # 自动:查询上游最新 node/dsh → 安装 → 启动 → 打开(零操作)"
+echo "  2) Safari → 文件 → 添加到程序坞,以后从 Dock 全屏打开 (docs/pwa-setup.md)"
+echo "  3) dshctl open      # 一键:确保运行中 + 打开 PWA"
+echo "  4) dshctl update    # 手动检查上游新版(平时 start 已自动检查)"
+echo "  5) dshctl doctor    # 健康检查"
