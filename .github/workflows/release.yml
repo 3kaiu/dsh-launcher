@@ -11,8 +11,10 @@ permissions:
 jobs:
   release:
     name: 构建发行包(dmg 双击版 + 命令行版)
-    runs-on: macos-latest
+    runs-on: macos-14-arm64
     timeout-minutes: 30
+    # 镜像说明:macos-14 的 hdiutil zlib 压缩率远好于 15/26(macos-latest 实测 186MB vs 140MB),
+    # 用 macos-14-arm64 出包,产物与本地构建一致;若该标签失效会立即失败,换回 macos-latest 即可
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
