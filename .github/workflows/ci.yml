@@ -37,8 +37,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - name: 构建便携包
+      - name: 构建发行包(rsvg-convert 渲染官方图标)
         run: |
+          brew install librsvg
           node scripts/release.ts ci
       - name: 冒烟测试(动态版本:node 最新 LTS + dsh latest)
         run: bash scripts/smoke-test.sh dist/stage/dshctl

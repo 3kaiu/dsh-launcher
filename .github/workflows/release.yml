@@ -18,8 +18,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - name: 构建(TS 源码 + App + dmg + zip,零构建期依赖)
-        run: node scripts/release.ts "${GITHUB_REF_NAME#v}"
+      - name: 构建(TS 源码 + App + dmg + zip;rsvg-convert 渲染官方图标)
+        run: |
+          brew install librsvg
+          node scripts/release.ts "${GITHUB_REF_NAME#v}"
       - name: 发布到 GitHub Releases
         env:
           GH_TOKEN: ${{ github.token }}

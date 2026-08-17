@@ -5,7 +5,7 @@
 //           (node = nodejs.org 最新 LTS,dsh = npm latest);按需启动,不用时零进程
 import { spawn, execSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { arch, nodeLatestLts, dshLatest, nodeTarballUrl, nodeShasumsUrl } from "./versions.ts";
@@ -141,7 +141,7 @@ async function cmdStart(autoOpen = true): Promise<number> {
   if (await waitReady(120, log)) {
     console.log("已就绪: " + URL);
     if (autoOpen && process.env.DSHCTL_NO_OPEN !== "1") {
-      try { execSync("open " + URL); console.log("已打开: " + URL); } catch { console.log("请手动打开: " + URL); }
+      openHarness();
     } else { console.log("提示: Safari 打开 " + URL + " → 文件 → 添加到程序坞(全屏 Web App)"); }
     return 0;
   }
@@ -172,9 +172,29 @@ async function cmdStatus(): Promise<number> {
   return ok ? 0 : 1;
 }
 
+// 已添加到程序坞的 Safari Web App(com.apple.Safari.WebApp.*)
+function safariWebApps(): string[] {
+  const apps: string[] = [];
+  for (const dir of [join(homedir(), "Applications"), "/Applications"]) {
+    let entries: string[] = [];
+    try { entries = readdirSync(dir).filter((n) => n.endsWith(".app")); } catch { continue; }
+    for (const n of entries) {
+      const p = join(dir, n, "Contents", "Info.plist");
+      try { if (readFileSync(p, "utf8").includes("com.apple.Safari.WebApp")) apps.push(join(dir, n)); } catch {}
+    }
+  }
+  return apps;
+}
+function openHarness(): void {
+  const apps = safariWebApps();
+  const hit = apps.find((a) => /deepseek|harness|dsh/i.test(a)) ?? apps[0];
+  if (hit) { try { execSync("open " + JSON.stringify(hit)); console.log("已打开 Dock Web App: " + hit); return; } catch {} }
+  try { execSync("open " + URL); console.log("已打开: " + URL); } catch { console.log("请手动打开: " + URL); }
+}
+
 async function cmdOpen(): Promise<number> {
   if (!(await healthy())) { console.log("未运行,先启动..."); if ((await cmdStart(false)) !== 0) return 1; }
-  try { execSync("open " + URL); console.log("已打开: " + URL); } catch { console.log("请手动打开: " + URL); }
+  openHarness();
   return 0;
 }
 

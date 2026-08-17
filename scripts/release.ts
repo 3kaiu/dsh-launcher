@@ -87,7 +87,7 @@ if (isMac) {
     console.log("  (无官方图标,fallback gen-icon.mjs 占位图)");
     sh("node", ["tools/gen-icon.mjs", join(dist, "icon.svg.png")]);
   } else {
-    sh("qlmanage", ["-t", "-s", "1024", "-o", dist, iconSvg]);
+    sh("rsvg-convert", ["-w", "1024", "-h", "1024", iconSvg, "-o", join(dist, "icon.svg.png")]);
   }
   const iconPng = join(dist, "icon.svg.png");
   const iconset = join(dist, "icon.iconset");
