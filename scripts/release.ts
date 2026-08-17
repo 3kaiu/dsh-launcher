@@ -81,15 +81,20 @@ if (isMac) {
     writeFileSync(join(resDir, f), readFileSync(join(root, base, f)));
     if (f.endsWith(".sh")) sh("chmod", ["+x", join(resDir, f)]);
   }
-  // 图标:官方 favicon.svg(assets/icon.svg)→ qlmanage 渲染 1024 PNG → sips iconset → iconutil icns
-  const iconSvg = join(root, "assets", "icon.svg");
-  if (!existsSync(iconSvg)) {
-    console.log("  (无官方图标,fallback gen-icon.mjs 占位图)");
-    sh("node", ["tools/gen-icon.mjs", join(dist, "icon.svg.png")]);
+  // 图标:官方 CDN favicon(assets/icon.png,sips 放大)→ fallback 官方 svg(rsvg)→ 占位图
+  let iconPng = join(dist, "icon.svg.png");
+  const iconPngSrc = join(root, "assets", "icon.png");
+  if (existsSync(iconPngSrc)) {
+    iconPng = join(dist, "icon.png");
+    sh("sips", ["-z", "1024", "1024", iconPngSrc, "--out", iconPng]);
+    console.log("  (图标:官方 CDN favicon.png)");
+  } else if (existsSync(join(root, "assets", "icon.svg"))) {
+    sh("rsvg-convert", ["-w", "1024", "-h", "1024", join(root, "assets", "icon.svg"), "-o", iconPng]);
+    console.log("  (图标:官方 favicon.svg)");
   } else {
-    sh("rsvg-convert", ["-w", "1024", "-h", "1024", iconSvg, "-o", join(dist, "icon.svg.png")]);
+    console.log("  (无官方图标,fallback gen-icon.mjs 占位图)");
+    sh("node", ["tools/gen-icon.mjs", iconPng]);
   }
-  const iconPng = join(dist, "icon.svg.png");
   const iconset = join(dist, "icon.iconset");
   rmSync(iconset, { recursive: true, force: true });
   mkdirSync(iconset, { recursive: true });
