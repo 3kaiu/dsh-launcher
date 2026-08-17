@@ -130,7 +130,8 @@ async function acquireLock(): Promise<boolean> {
     try { mkdirSync(LOCK); writeFileSync(join(LOCK, "pid"), String(process.pid)); return true; } catch {}
     try {
       const pid = Number(readFileSync(join(LOCK, "pid"), "utf8")) || 0;
-      if (!pidAlive(pid)) { rmSync(LOCK, { recursive: true, force: true }); continue; }
+      // 仅当 pid 有效且进程已死才判定失效;空 pid(持锁方尚未写入)只等待
+      if (pid > 0 && !pidAlive(pid)) { rmSync(LOCK, { recursive: true, force: true }); continue; }
     } catch {}
     await new Promise((r) => setTimeout(r, 1000));
   }

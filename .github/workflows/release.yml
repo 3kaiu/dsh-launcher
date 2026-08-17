@@ -18,20 +18,19 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - name: 构建(TS 源码 + App + dmg + zip;rsvg-convert 渲染官方图标)
+      - name: 构建(TS 源码 + App + dmg + zip;图标 CDN 实时拉取)
         run: |
-          brew install librsvg
           node scripts/release.ts "${GITHUB_REF_NAME#v}"
-      - name: 发布到 GitHub Releases
+      - name: 发布到 GitHub Releases(仅 dmg;校验清单与命令行 zip 不进发布页)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           cd dist
           VER="${GITHUB_REF_NAME#v}"
           gh release create "${{ github.ref_name }}" \
-            "dsh-launcher-$VER.dmg" "dshctl-$VER.zip" SHA256SUMS.txt VERSIONS.txt \
+            "dsh-launcher-$VER.dmg" \
             --title "dsh-launcher ${{ github.ref_name }}" \
             --generate-notes \
             || gh release upload "${{ github.ref_name }}" \
-              "dsh-launcher-$VER.dmg" "dshctl-$VER.zip" SHA256SUMS.txt VERSIONS.txt --clobber
+              "dsh-launcher-$VER.dmg" --clobber
 

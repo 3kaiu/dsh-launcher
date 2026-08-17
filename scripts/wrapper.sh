@@ -15,17 +15,21 @@ DSH_VER=""
 # 并发安装锁(与 dshctl.ts 同一把锁):首次安装/引导互斥,双击连点或 CLI 并发时后到者等待
 LOCK="$RT_HOME/.bootstrap.lock"
 mkdir -p "$RT_HOME" 2>/dev/null || true
+LOCKED=0
 for i in $(seq 1 300); do
   if mkdir "$LOCK" 2>/dev/null; then
     echo "$$" > "$LOCK/pid"
+    LOCKED=1
     break
   fi
   LPID="$(cat "$LOCK/pid" 2>/dev/null || echo 0)"
-  if [ -z "$LPID" ] || ! kill -0 "$LPID" 2>/dev/null; then rm -rf "$LOCK"; continue; fi
+  # 仅当 pid 为数字且进程已死才判定失效;空 pid(持锁方尚未写入)只等待
+  if [ "$LPID" != "0" ] && ! kill -0 "$LPID" 2>/dev/null; then rm -rf "$LOCK"; continue; fi
   sleep 1
 done
-trap 'rm -f "$LOCK/pid"; rmdir "$LOCK" 2>/dev/null || true' EXIT
-release_lock() { rm -f "$LOCK/pid"; rmdir "$LOCK" 2>/dev/null || true; }
+if [ "$LOCKED" != "1" ]; then echo "等待安装锁超时(300s),请稍后重试" >&2; exit 1; fi
+trap '[ "$LOCKED" = "1" ] && { rm -f "$LOCK/pid"; rmdir "$LOCK" 2>/dev/null || true; }' EXIT
+release_lock() { [ "$LOCKED" = "1" ] && { rm -f "$LOCK/pid"; rmdir "$LOCK" 2>/dev/null || true; }; }
 
 if [ ! -x "$RT_NODE" ]; then
   if [ -x "$BUNDLED_NODE" ]; then

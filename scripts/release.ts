@@ -242,8 +242,10 @@ if (isMac) {
     sh("cp", ["-R", app, dmgSrc]);
     sh("ln", ["-s", "/Applications", join(dmgSrc, "Applications")]);
     dmgPath = join(dist, "dsh-launcher-" + version + ".dmg");
-    // ULMO = LZMA 压缩,比 ULFO 再省约 15-20%,代价是构建时间(约数分钟)
-    sh("hdiutil", ["create", "-volname", "dsh-launcher-" + version, "-srcfolder", dmgSrc, "-ov", "-format", "ULMO", dmgPath]);
+    // UDZO(zlib-level 9):zlib 编码器跨 macOS 版本一致,CI 与本地产物可复现。
+    // 不用 ULMO(LZMA):其压缩率随 macOS 点版本编码器浮动(实测 26.5 本地 121MB,
+    // 而 CI macos-26 镜像同内容同参数 175MB,差 40%),发布产物不可预测。
+    sh("hdiutil", ["create", "-volname", "dsh-launcher-" + version, "-srcfolder", dmgSrc, "-ov", "-format", "UDZO", "-imagekey", "zlib-level=9", dmgPath]);
   } else {
     console.log("== 3/3 跳过 dmg 打包(CI 冒烟模式,仅 stage)");
   }
