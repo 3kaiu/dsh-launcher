@@ -7,7 +7,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-14, macos-15, macos-26-arm64]
+        os: [macos-14-arm64, macos-26-arm64]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
