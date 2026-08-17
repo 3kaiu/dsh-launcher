@@ -3,7 +3,7 @@
 // 生命周期: install / start / stop / restart / status / logs / open / update / watch / doctor
 // 设计原则: 官方 dsh 零修改零 fork;node 与 dsh 版本不写死——每次运行跟随上游最新
 //           (node = nodejs.org 最新 LTS,dsh = npm latest);按需启动,不用时零进程
-import { spawn, spawnSync, execSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createWriteStream, existsSync, mkdirSync, openSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -122,6 +122,22 @@ function installDsh(): boolean {
   } catch (e) { console.error("dsh 安装失败: " + (e as Error).message); return false; }
 }
 
+/** 并发安装锁:mkdir 原子互斥,锁内记录 pid 用于失效清理(双击连点/CLI 并发装同一运行时) */
+const LOCK = join(RT_HOME, ".bootstrap.lock");
+async function acquireLock(): Promise<boolean> {
+  mkdirSync(RT_HOME, { recursive: true });
+  for (let i = 0; i < 300; i++) {
+    try { mkdirSync(LOCK); writeFileSync(join(LOCK, "pid"), String(process.pid)); return true; } catch {}
+    try {
+      const pid = Number(readFileSync(join(LOCK, "pid"), "utf8")) || 0;
+      if (!pidAlive(pid)) { rmSync(LOCK, { recursive: true, force: true }); continue; }
+    } catch {}
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+  return false;
+}
+function releaseLock() { try { rmSync(LOCK, { recursive: true, force: true }); } catch {} }
+
 async function ensureRuntime(): Promise<boolean> {
   let v = readVersions();
   // 包内预装运行时(versions.json 可能缺版本)→ 记录实际版本,避免重复下载/安装
@@ -131,7 +147,7 @@ async function ensureRuntime(): Promise<boolean> {
   }
   if (!v.dsh && existsSync(DSH_PKG)) {
     try {
-const pkg = JSON.parse(readFileSync(DSH_PKG, "utf8")) as { version: string };
+      const pkg = JSON.parse(readFileSync(DSH_PKG, "utf8")) as { version: string };
       v = { ...v, dsh: pkg.version };
     } catch {}
   }
@@ -140,20 +156,27 @@ const pkg = JSON.parse(readFileSync(DSH_PKG, "utf8")) as { version: string };
   const stale = !v.checkedAt || Date.now() - new Date(v.checkedAt).getTime() > 60 * 60 * 1000;
   const [nodeLts, dshLatestV] = stale ? await Promise.all([nodeLatestLts(), dshLatest()]) : [null, null];
   if (nodeLts || dshLatestV) writeVersions({ ...v, checkedAt: new Date().toISOString() });
-  if (nodeLts && v.node !== nodeLts) {
-    console.log("检测到上游新版 Node: " + (v.node ?? "无") + " → " + nodeLts);
-    if (!(await installNode(nodeLts))) { console.error("升级 Node 失败,继续用本地版本"); } else writeVersions({ ...v, node: nodeLts });
-  } else if (!existsSync(NODE_BIN)) {
-    const ver = nodeLts ?? "24.19.0";
-    if (!(await installNode(ver))) return false;
-    writeVersions({ ...v, node: ver });
-  }
-  if (dshLatestV && v.dsh !== dshLatestV) {
-    console.log("检测到上游新版 dsh: " + (v.dsh ?? "无") + " → " + dshLatestV);
-    if (!installDsh()) console.error("升级 dsh 失败,继续用本地版本");
-  } else if (!existsSync(dshBin())) {
-    if (!installDsh()) return false;
-  }
+  // 无需任何安装/升级 → 直接可用
+  if (existsSync(NODE_BIN) && existsSync(dshBin()) && (!nodeLts || v.node === nodeLts) && (!dshLatestV || v.dsh === dshLatestV)) return true;
+  // 加锁安装(等锁期间并发进程可能已装好,拿锁后重读再决策)
+  if (!(await acquireLock())) { console.error("等待安装锁超时(300s),请稍后重试"); return false; }
+  try {
+    v = readVersions();
+    if (nodeLts && v.node !== nodeLts) {
+      console.log("检测到上游新版 Node: " + (v.node ?? "无") + " → " + nodeLts);
+      if (!(await installNode(nodeLts))) { console.error("升级 Node 失败,继续用本地版本"); } else writeVersions({ ...v, node: nodeLts });
+    } else if (!existsSync(NODE_BIN)) {
+      const ver = nodeLts ?? "24.19.0";
+      if (!(await installNode(ver))) return false;
+      writeVersions({ ...v, node: ver });
+    }
+    if (dshLatestV && v.dsh !== dshLatestV) {
+      console.log("检测到上游新版 dsh: " + (v.dsh ?? "无") + " → " + dshLatestV);
+      if (!installDsh()) console.error("升级 dsh 失败,继续用本地版本");
+    } else if (!existsSync(dshBin())) {
+      if (!installDsh()) return false;
+    }
+  } finally { releaseLock(); }
   return true;
 }
 
@@ -164,6 +187,17 @@ async function cmdStart(autoOpen = true): Promise<number> {
     // 重复双击/start:直接把 PWA/浏览器打开,而不是什么都不做
     if (autoOpen && process.env.DSHCTL_NO_OPEN !== "1") openHarness();
     return 0;
+  }
+  // 启动中(pid 存活但未就绪):不重复拉起,等待当前实例就绪(避免二次双击抢端口报错)
+  if (pidAlive(readPid())) {
+    console.log("正在启动中,等待就绪...");
+    if (await waitReady(120, newestLog())) {
+      console.log("已就绪: " + URL);
+      if (autoOpen && process.env.DSHCTL_NO_OPEN !== "1") openHarness();
+      return 0;
+    }
+    console.error("等待就绪超时,日志: " + LOG_DIR);
+    return 1;
   }
   if (!existsSync(NODE_BIN) || !existsSync(dshBin())) console.log("首次使用:自动安装运行时(跟随上游最新)...");
   if (!(await ensureRuntime())) return 1;
@@ -241,7 +275,7 @@ async function cmdOpen(): Promise<number> {
 async function cmdLogs(): Promise<number> {
   const logs = readdirSync(LOG_DIR).sort().slice(-3);
   if (!logs.length) { console.log("暂无日志"); return 0; }
-  execSync("tail -n 50 " + logs.map((f) => join(LOG_DIR, f)).join(" "), { stdio: "inherit" });
+  spawnSync("tail", ["-n", "50", ...logs.map((f) => join(LOG_DIR, f))], { stdio: "inherit" });
   return 0;
 }
 
@@ -276,7 +310,7 @@ async function cmdDoctor(): Promise<number> {
 const cmd = process.argv[2] ?? "help";
 const main = async () => {
   switch (cmd) {
-    case "install": await ensureRuntime(); break;
+    case "install": process.exit((await ensureRuntime()) ? 0 : 1); break;
     case "start": process.exit(await cmdStart()); break;
     case "stop": process.exit(await cmdStop()); break;
     case "restart": await cmdStop(); process.exit(await cmdStart()); break;

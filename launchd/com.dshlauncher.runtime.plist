@@ -4,7 +4,7 @@
 <!--
   LaunchAgent 模板(参考用,可选)。
   复制到 ~/Library/LaunchAgents/,替换 __DSHCTL_PATH__/__RT_HOME__/__RT_STATE__/__LOG_DIR__ 占位符后
-  launchctl load 即可;watch 模式每 10s 健康检查,崩溃自动拉起。
+  launchctl load 即可;watch 模式每 5s 健康检查,崩溃自动拉起。
 -->
 <dict>
   <key>Label</key><string>com.dsh-launcher.runtime</string>

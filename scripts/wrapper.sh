@@ -12,6 +12,21 @@ ARCH="$(uname -m | sed "s/x86_64/x64/")"
 NODE_VER=""
 DSH_VER=""
 
+# 并发安装锁(与 dshctl.ts 同一把锁):首次安装/引导互斥,双击连点或 CLI 并发时后到者等待
+LOCK="$RT_HOME/.bootstrap.lock"
+mkdir -p "$RT_HOME" 2>/dev/null || true
+for i in $(seq 1 300); do
+  if mkdir "$LOCK" 2>/dev/null; then
+    echo "$$" > "$LOCK/pid"
+    break
+  fi
+  LPID="$(cat "$LOCK/pid" 2>/dev/null || echo 0)"
+  if [ -z "$LPID" ] || ! kill -0 "$LPID" 2>/dev/null; then rm -rf "$LOCK"; continue; fi
+  sleep 1
+done
+trap 'rm -f "$LOCK/pid"; rmdir "$LOCK" 2>/dev/null || true' EXIT
+release_lock() { rm -f "$LOCK/pid"; rmdir "$LOCK" 2>/dev/null || true; }
+
 if [ ! -x "$RT_NODE" ]; then
   if [ -x "$BUNDLED_NODE" ]; then
     NODE_VER="$("$BUNDLED_NODE" --version 2>/dev/null | sed 's/^v//')"
@@ -63,4 +78,5 @@ if [ -n "$NODE_VER" ] || [ -n "$DSH_VER" ]; then
     fs.writeFileSync(f, JSON.stringify(d) + "\n");
   ' "$RT_HOME/versions.json" "$NODE_VER" "$DSH_VER"
 fi
+release_lock
 exec "$RT_NODE" "$DIR/dshctl.ts" "$@"
