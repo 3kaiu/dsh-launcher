@@ -19,8 +19,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - name: 依赖(typescript + esbuild)
-        run: npm i -g typescript@^5.6 esbuild
+      - name: 依赖(devDeps + typescript + esbuild)
+        run: |
+          npm ci
+          npm i -g typescript@^5.6 esbuild
       - name: TS 类型检查
         run: tsc --noEmit
       - name: 单测(node --test,原生 TS)
