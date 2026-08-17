@@ -81,9 +81,15 @@ if (isMac) {
     writeFileSync(join(resDir, f), readFileSync(join(root, base, f)));
     if (f.endsWith(".sh")) sh("chmod", ["+x", join(resDir, f)]);
   }
-  // 图标:node 生成 1024 PNG → sips iconset → iconutil icns
-  const iconPng = join(dist, "icon-1024.png");
-  sh("node", ["tools/gen-icon.mjs", iconPng]);
+  // 图标:官方 favicon.svg(assets/icon.svg)→ qlmanage 渲染 1024 PNG → sips iconset → iconutil icns
+  const iconSvg = join(root, "assets", "icon.svg");
+  if (!existsSync(iconSvg)) {
+    console.log("  (无官方图标,fallback gen-icon.mjs 占位图)");
+    sh("node", ["tools/gen-icon.mjs", join(dist, "icon.svg.png")]);
+  } else {
+    sh("qlmanage", ["-t", "-s", "1024", "-o", dist, iconSvg]);
+  }
+  const iconPng = join(dist, "icon.svg.png");
   const iconset = join(dist, "icon.iconset");
   rmSync(iconset, { recursive: true, force: true });
   mkdirSync(iconset, { recursive: true });
