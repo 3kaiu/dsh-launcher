@@ -116,10 +116,15 @@ if (isMac) {
   sh("iconutil", ["-c", "icns", iconset, "-o", join(resDir, "icon.icns")]);
   // ad-hoc 签名(减少"无法验证开发者"提示)
   sh("codesign", ["--force", "-s", "-", "--deep", app]);
-  // dmg
-  console.log("== 3/3 打包 dmg");
+  // dmg:App + 应用程序快捷方式(拖入即安装)
+  console.log("== 3/3 打包 dmg(App + Applications 快捷方式)");
+  const dmgSrc = join(dist, "dmg-src");
+  rmSync(dmgSrc, { recursive: true, force: true });
+  mkdirSync(dmgSrc, { recursive: true });
+  sh("cp", ["-R", app, dmgSrc]);
+  sh("ln", ["-s", "/Applications", join(dmgSrc, "Applications")]);
   dmgPath = join(dist, "dsh-launcher-" + version + ".dmg");
-  sh("hdiutil", ["create", "-volname", "dsh-launcher-" + version, "-srcfolder", app, "-ov", "-format", "UDZO", dmgPath]);
+  sh("hdiutil", ["create", "-volname", "dsh-launcher-" + version, "-srcfolder", dmgSrc, "-ov", "-format", "UDZO", dmgPath]);
 } else {
   console.log("== 2/3 跳过 App/dmg(非 macOS,仅构建命令行包)");
   console.log("== 3/3 打包完成(命令行版)");
