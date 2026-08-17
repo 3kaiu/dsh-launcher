@@ -3,23 +3,24 @@ set -euo pipefail
 # 安装 dshctl 便携包:包 → ~/.local/share/dsh-launcher/,dshctl → ~/.local/bin
 # 用法: ./install.sh(包根内)或 bash scripts/install.sh(仓库内,构建后)
 SRC="$(cd "$(dirname "$0")" && pwd)"
-# 仓库内运行时定位 dist/stage-*
+# 仓库内运行时定位 dist/stage
 if [ -d "$SRC/../dist" ]; then
-  STAGE="$(ls -d "$SRC"/../dist/stage-* 2>/dev/null | head -1 || true)"
+  STAGE="$(ls -d "$SRC"/../dist/stage 2>/dev/null | head -1 || true)"
   [ -n "$STAGE" ] && [ -x "$STAGE/dshctl" ] && SRC="$STAGE"
 fi
 [ -x "$SRC/dshctl" ] || { echo "找不到便携包 dshctl(先运行 node scripts/release.ts)" >&2; exit 1; }
 DEST="${DSH_LAUNCHER_DIR:-$HOME/.local/share/dsh-launcher}"
 BIN_DIR="${DSH_LAUNCHER_BIN_DIR:-$HOME/.local/bin}"
 mkdir -p "$DEST" "$BIN_DIR"
-rm -rf "$DEST/node" "$DEST/dshctl.mjs" "$DEST/dshctl"
-cp -R "$SRC/node" "$DEST/"
-cp "$SRC/dshctl.mjs" "$SRC/dshctl" "$DEST/"
+rm -rf "$DEST"
+mkdir -p "$DEST"
+cp "$SRC/dshctl.ts" "$SRC/versions.ts" "$SRC/wrapper.sh" "$DEST/"
+cp "$SRC/dshctl" "$DEST/dshctl"
 chmod +x "$DEST/dshctl"
 ln -sf "$DEST/dshctl" "$BIN_DIR/dshctl"
-echo "✓ dshctl 已安装: $BIN_DIR/dshctl (运行时: $DEST)"
+echo "✓ dshctl 已安装: $BIN_DIR/dshctl (运行时: $DEST;首次 start 自动下载 node 最新 LTS + dsh latest)"
 case ":$PATH:" in
-  *":$PATH:"*) ;;
+  *":$BIN_DIR:"*) ;;
   *) printf '提示: %s 不在 PATH,请执行:
   echo '\''export PATH="%s:$PATH"'\'' >> ~/.zshrc
 ' "$BIN_DIR" "$BIN_DIR" ;;

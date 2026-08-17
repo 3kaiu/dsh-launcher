@@ -2,10 +2,9 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <!--
-  LaunchAgent 模板(参考用)。
-  实际使用请执行: dshctl agent-install
-  它会根据你的真实路径生成 ~/Library/LaunchAgents/com.dsh-launcher.runtime.plist
-  watch 模式:每 10s 健康检查,掉线自动拉起;KeepAlive 保证崩溃自愈。
+  LaunchAgent 模板(参考用,可选)。
+  复制到 ~/Library/LaunchAgents/,替换 __DSHCTL_PATH__/__RT_HOME__/__RT_STATE__/__LOG_DIR__ 占位符后
+  launchctl load 即可;watch 模式每 10s 健康检查,崩溃自动拉起。
 -->
 <dict>
   <key>Label</key><string>com.dsh-launcher.runtime</string>

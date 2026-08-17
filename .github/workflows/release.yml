@@ -12,7 +12,7 @@ jobs:
   release:
     name: 构建发行包(dmg 双击版 + 命令行版)
     runs-on: macos-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

@@ -6,7 +6,7 @@
 //   SHA256SUMS.txt / VERSIONS.txt
 // 版本:全部动态 —— node 取 nodejs.org 最新 LTS,dsh 取 npm latest,不写死
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync, statSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
@@ -18,6 +18,18 @@ const version = process.argv[2] ?? "dev";
 const isMac = process.platform === "darwin";
 const APP_NAME = "DeepSeek Harness";
 const APP_ID = "com.dshlauncher.app";
+
+/** 解析 nodejs.org 最新 LTS(网络失败回退固定版本,仅影响构建时打包) */
+async function latestNodeLts(): Promise<string> {
+  try {
+    const res = await fetch("https://nodejs.org/dist/index.json", { signal: AbortSignal.timeout(15000) });
+    if (!res.ok) return "24.19.0";
+    const list = (await res.json()) as { version: string; lts: string | false | null }[];
+    return list.find((e) => e.lts !== false && e.lts !== null)?.version.replace(/^v/, "") ?? "24.19.0";
+  } catch { return "24.19.0"; }
+}
+
+async function main() {
 
 function sh(cmd: string, args: string[], cwd?: string): boolean {
   const r = spawnSync(cmd, args, { cwd: cwd ?? root, stdio: "inherit" });
@@ -40,7 +52,7 @@ for (const [src, dst] of [
 writeFileSync(join(stage, "dshctl"), readFileSync(join(root, "scripts", "wrapper.sh")));
 writeFileSync(join(stage, "install.sh"), readFileSync(join(root, "scripts", "install.sh")));
 sh("chmod", ["+x", join(stage, "dshctl")]);
-sh("bash", ["-lc", "cd dist/stage && zip -qr ../dshctl-" + version + ".zip ."]);
+sh("zip", ["-qr", join(dist, "dshctl-" + version + ".zip"), "."], stage);
 
 // ---- macOS 双击 App + dmg ----
 let dmgPath: string | null = null;
@@ -79,6 +91,112 @@ if (isMac) {
     const base = f.endsWith(".ts") ? "src" : "scripts";
     writeFileSync(join(resDir, f), readFileSync(join(root, base, f)));
     if (f.endsWith(".sh")) sh("chmod", ["+x", join(resDir, f)]);
+  }
+  // 内置精简 node 最新 LTS(仅 bin/node + bin/npm + lib/node_modules/npm,首次引导免下载)
+  {
+    const nodeVer = await latestNodeLts();
+    const nodeArch = process.arch === "arm64" ? "arm64" : "x64";
+    // tarball 缓存到 .cache/(dist 每次清空),重复构建不再重新下载
+    const cacheDir = join(root, ".cache");
+    mkdirSync(cacheDir, { recursive: true });
+    const tar = join(cacheDir, "node-v" + nodeVer + "-darwin-" + nodeArch + ".tar.gz");
+    const tmp = join(dist, "node-extract");
+    rmSync(tmp, { recursive: true, force: true });
+    mkdirSync(tmp, { recursive: true });
+    if (existsSync(tar)) {
+      console.log("  (内置 node: v" + nodeVer + " 已缓存,跳过下载)");
+    } else {
+      console.log("  (内置 node: 下载 v" + nodeVer + " darwin-" + nodeArch + " ...)");
+      const dl = spawnSync("curl", ["-fSL", "--max-time", "900", "-o", tar, "https://nodejs.org/dist/v" + nodeVer + "/node-v" + nodeVer + "-darwin-" + nodeArch + ".tar.gz"], { stdio: "inherit" });
+      if (dl.status !== 0) { rmSync(tar, { force: true }); console.error("  (警告: node 下载失败,首次启动时将自动下载)"); }
+    }
+    if (existsSync(tar)) {
+      const sums = spawnSync("curl", ["-fsS", "--max-time", "60", "https://nodejs.org/dist/v" + nodeVer + "/SHASUMS256.txt"], { encoding: "utf8" });
+      const expect = (sums.stdout ?? "").split("\n").find((l) => l.includes("node-v" + nodeVer + "-darwin-" + nodeArch + ".tar.gz"))?.split(/\s+/)[0];
+      const actual = createHash("sha256").update(readFileSync(tar)).digest("hex");
+      if (!expect || actual !== expect) {
+        console.error("  (警告: SHA-256 校验失败,不打包 node,首次启动自动下载)");
+      } else if (!sh("tar", ["-xzf", tar, "-C", tmp, "--strip-components=1"])) {
+        console.error("  (警告: 解压失败,首次启动自动下载)");
+      } else {
+        // 精简:只保留运行所需(bin/node + bin/npm + lib/node_modules/npm)
+        // 注意:bin/npm 是符号链接,cp 必须用 -P 保留,否则 require 相对路径失效
+        const nodeDir = join(resDir, "node");
+        const binDir = join(nodeDir, "bin");
+        mkdirSync(binDir, { recursive: true });
+        for (const f of ["node", "npm"]) {
+          sh("cp", ["-P", join(tmp, "bin", f), join(binDir, f)]);
+          sh("chmod", ["+x", join(binDir, f)]);
+        }
+        for (const f of ["lib/node_modules/npm", "LICENSE"]) {
+          const from = join(tmp, f);
+          if (existsSync(from)) {
+            const to = join(nodeDir, f);
+            mkdirSync(dirname(to), { recursive: true });
+            sh("cp", ["-R", from, to]);
+          }
+        }
+        const probe = spawnSync(join(nodeDir, "bin", "node"), ["--version"], { encoding: "utf8" });
+        if (probe.status === 0) console.log("  (已内置精简 node " + probe.stdout.trim() + " → Resources/node)");
+        else { rmSync(nodeDir, { recursive: true, force: true }); console.error("  (警告: 内置 node 校验失败,首次启动自动下载)"); }
+      }
+    }
+    rmSync(tmp, { recursive: true, force: true });
+  }
+  // 内置已安装的 dsh 官方运行时(Resources/app):双击零下载、离线可用
+  {
+    const appDir = join(resDir, "app");
+    if (!existsSync(join(resDir, "node", "bin", "node"))) {
+      console.error("  (警告: 无内置 node,跳过 dsh 预装,首次启动将 npm 安装)");
+    } else {
+      mkdirSync(appDir, { recursive: true });
+      writeFileSync(join(appDir, "package.json"), JSON.stringify({ name: "dsh-runtime-app", private: true, dependencies: { "@deepseek-ai/dsh": "latest" } }, null, 2) + "\n");
+      console.log("  (预装官方 dsh@latest: npm install,约 1-3 分钟)");
+      const r = spawnSync(join(resDir, "node", "bin", "npm"), ["install", "--no-audit", "--no-fund", "--loglevel=error"], { cwd: appDir, env: { ...process.env, PATH: join(resDir, "node", "bin") + ":" + process.env.PATH }, stdio: "inherit" });
+      const pkg = join(appDir, "node_modules", "@deepseek-ai", "dsh", "package.json");
+      if (r.status === 0 && existsSync(pkg)) {
+        const ver = (JSON.parse(readFileSync(pkg, "utf8")) as { version: string }).version;
+        // 剪除其他平台的原生预编译与 Windows 构建源码(如 node-pty 的 win32 PDB,~58MB)
+        const nodeArchName = process.arch === "arm64" ? "arm64" : "x64";
+        const ptyDir = join(appDir, "node_modules", "node-pty");
+        for (const sub of ["prebuilds", "third_party", "deps"]) {
+          const p = join(ptyDir, sub);
+          if (existsSync(p)) {
+            for (const entry of readdirSync(p)) {
+              if (sub === "prebuilds" && entry === "darwin-" + nodeArchName) continue;
+              rmSync(join(p, entry), { recursive: true, force: true });
+            }
+          }
+        }
+        const probe = spawnSync(join(resDir, "node", "bin", "node"), ["-e", "require(process.argv[1]);console.log('pty ok')", join(appDir, "node_modules", "node-pty", "lib", "index.js")], { encoding: "utf8" });
+        if (probe.status === 0) console.log("  (已剪除其他平台原生预编译,node-pty 校验通过)");
+        else console.error("  (警告: node-pty 校验失败,终端功能可能异常)");
+        // 剪除运行时永不加载的 sourcemap(约 7.6M)、README/文档(.md)、测试目录与 .DS_Store
+        const walk = (dir: string): void => {
+          for (const e of readdirSync(dir, { withFileTypes: true })) {
+            const p = join(dir, e.name);
+            if (e.isDirectory()) {
+              if (e.name === "test" || e.name === "tests" || e.name === "__tests__") { rmSync(p, { recursive: true, force: true }); continue; }
+              walk(p);
+            } else if (e.name.endsWith(".map") || e.name.endsWith(".md") || e.name === ".DS_Store") rmSync(p, { force: true });
+          }
+        };
+        walk(join(appDir, "node_modules"));
+        // 剪除遥测依赖:40K 的 dsh-session-telemetry-otel 插件拖入整个 @opentelemetry 树(21M),
+        // 启动环境已设官方开关 DSH_TELEMETRY_DISABLED=1,插件不会被加载,纯属磁盘占用
+        for (const sub of ["@opentelemetry", "@deepseek-ai/dsh-session-telemetry-otel"]) {
+          rmSync(join(appDir, "node_modules", sub), { recursive: true, force: true });
+        }
+        for (const d of [join(resDir, "node", "lib", "node_modules", "npm", "man"), join(resDir, "node", "lib", "node_modules", "npm", "html")]) {
+          rmSync(d, { recursive: true, force: true });
+        }
+        console.log("  (已剪除 sourcemap 与 npm 文档)");
+        console.log("  (已预装 dsh " + ver + " → Resources/app,双击即用,离线可用)");
+      } else {
+        rmSync(appDir, { recursive: true, force: true });
+        console.error("  (警告: dsh 预装失败,首次启动将自动安装)");
+      }
+    }
   }
   // 图标:构建时从官方 CDN 实时拉取(上游更新自动跟随)→ fallback 本地入库图 → svg(rsvg)→ 占位图
   let iconPng = join(dist, "icon.svg.png");
@@ -123,7 +241,8 @@ if (isMac) {
   sh("cp", ["-R", app, dmgSrc]);
   sh("ln", ["-s", "/Applications", join(dmgSrc, "Applications")]);
   dmgPath = join(dist, "dsh-launcher-" + version + ".dmg");
-  sh("hdiutil", ["create", "-volname", "dsh-launcher-" + version, "-srcfolder", dmgSrc, "-ov", "-format", "UDZO", dmgPath]);
+  // ULMO = LZMA 压缩,比 ULFO 再省约 15-20%,代价是构建时间(约数分钟)
+  sh("hdiutil", ["create", "-volname", "dsh-launcher-" + version, "-srcfolder", dmgSrc, "-ov", "-format", "ULMO", dmgPath]);
 } else {
   console.log("== 2/3 跳过 App/dmg(非 macOS,仅构建命令行包)");
   console.log("== 3/3 打包完成(命令行版)");
@@ -137,7 +256,9 @@ for (const f of ["dshctl-" + version + ".zip"]) {
 }
 if (dmgPath && existsSync(dmgPath)) sums.push(createHash("sha256").update(readFileSync(dmgPath)).digest("hex") + "  " + "dsh-launcher-" + version + ".dmg");
 writeFileSync(join(dist, "SHA256SUMS.txt"), sums.join(String.fromCharCode(10)) + String.fromCharCode(10));
-writeFileSync(join(dist, "VERSIONS.txt"), "轻量包:不含运行时;首次启动自动下载 node 最新 LTS + dsh latest" + String.fromCharCode(10));
+writeFileSync(join(dist, "VERSIONS.txt"), "dmg 版:内置精简 node LTS + 预装官方 dsh,离线即用;命令行版:首次 start 自动下载最新 node LTS + dsh latest" + String.fromCharCode(10));
 console.log("产物:");
-if (dmgPath && existsSync(dmgPath)) console.log("  dsh-launcher-" + version + ".dmg (" + Math.round(statSync(dmgPath).size / 1024) + " KB) — 双击安装");
+if (dmgPath && existsSync(dmgPath)) console.log("  dsh-launcher-" + version + ".dmg (" + Math.round(statSync(dmgPath).size / 1024) + " KB,内含 node LTS) — 双击安装");
 console.log("  dshctl-" + version + ".zip (" + Math.round(statSync(join(dist, "dshctl-" + version + ".zip")).size / 1024) + " KB) — 命令行版");
+}
+main().catch((e) => { console.error(e); process.exit(1); });

@@ -18,7 +18,7 @@ export function parseDshLatest(j: { version?: string }): string | null {
 /** 拉取 node 最新 LTS(网络失败返回 null,调用方回退本地版本) */
 export async function nodeLatestLts(): Promise<string | null> {
   try {
-    const res = await fetch("https://nodejs.org/dist/index.json", { signal: AbortSignal.timeout(10000) });
+    const res = await fetch("https://nodejs.org/dist/index.json", { signal: AbortSignal.timeout(5000) });
     if (!res.ok) return null;
     return parseNodeIndex((await res.json()) as { version: string; lts: string | false | null }[]);
   } catch { return null; }
@@ -27,7 +27,7 @@ export async function nodeLatestLts(): Promise<string | null> {
 /** 拉取 @deepseek-ai/dsh 最新版(网络失败返回 null) */
 export async function dshLatest(): Promise<string | null> {
   try {
-    const res = await fetch("https://registry.npmjs.org/@deepseek-ai/dsh/latest", { signal: AbortSignal.timeout(10000) });
+    const res = await fetch("https://registry.npmjs.org/@deepseek-ai/dsh/latest", { signal: AbortSignal.timeout(5000) });
     if (!res.ok) return null;
     return parseDshLatest((await res.json()) as { version?: string });
   } catch { return null; }
@@ -38,7 +38,4 @@ export function nodeTarballUrl(ver: string, a: Arch): string {
 }
 export function nodeShasumsUrl(ver: string): string {
   return "https://nodejs.org/dist/v" + ver + "/SHASUMS256.txt";
-}
-export function dshNpmUrl(): string {
-  return "https://registry.npmjs.org/@deepseek-ai/dsh";
 }

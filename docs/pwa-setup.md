@@ -9,7 +9,7 @@
    ```bash
    dshctl start
    ```
-   (首次会自动下载固定版本的 Node 24 LTS 并安装官方 `@deepseek-ai/dsh`)
+   (dmg 版已内置运行时;命令行版首次会自动下载最新 LTS Node 并安装官方 `@deepseek-ai/dsh`)
 
 2. 用 Safari 打开 http://127.0.0.1:3080 ,完成首次配置(模型 / API Key 等)。
 
@@ -27,7 +27,6 @@
 | 打开 PWA(自动确保运行时已启动) | `dshctl open` |
 | 仅启动运行时 | `dshctl start` |
 | 停止运行时(释放内存,退出后无残留进程) | `dshctl stop` |
-| 菜单栏方式 | 使用 DeepSeek Harness Launcher.app |
 
 `dshctl open` 会优先打开 ~/Applications 里的 **DeepSeek Harness** Web App;
 如果还没添加程序坞,则回退为 Safari 打开页面。

@@ -1,14 +1,17 @@
 #!/usr/bin/env node
-// dshctl.ts —— DeepSeek Harness 运行时管理器(TypeScript;构建为 SEA 单文件可执行,零依赖运行)
+// dshctl.ts —— DeepSeek Harness 运行时管理器(TypeScript,node >= 24 原生运行,零依赖)
 // 生命周期: install / start / stop / restart / status / logs / open / update / watch / doctor
 // 设计原则: 官方 dsh 零修改零 fork;node 与 dsh 版本不写死——每次运行跟随上游最新
 //           (node = nodejs.org 最新 LTS,dsh = npm latest);按需启动,不用时零进程
-import { spawn, execSync } from "node:child_process";
+import { spawn, spawnSync, execSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync, statSync } from "node:fs";
+import { createWriteStream, existsSync, mkdirSync, openSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { arch, nodeLatestLts, dshLatest, nodeTarballUrl, nodeShasumsUrl } from "./versions.ts";
+import type { ReadableStream as WebReadableStream } from "node:stream/web";
 const env = (k: string): string | undefined => process.env[k]?.length ? process.env[k] : undefined;
 const RT_HOME = env("DSH_RT_HOME") ?? join(homedir(), ".local", "share", "dsh-runtime");
 const RT_STATE = env("DSH_RT_STATE") ?? join(homedir(), ".local", "state", "dsh-runtime");
@@ -19,13 +22,22 @@ const NODE_DIR = join(RT_HOME, "node");
 const APP_DIR = join(RT_HOME, "app");
 const NODE_BIN = join(NODE_DIR, "bin", "node");
 const NPM_BIN = join(NODE_DIR, "bin", "npm");
-const DSH_BIN = join(APP_DIR, "node_modules", "@deepseek-ai", "dsh", "lib", "bin.js");
+const DSH_PKG = join(APP_DIR, "node_modules", "@deepseek-ai", "dsh", "package.json");
+
+/** dsh 可执行入口:从官方 package.json 的 bin 字段动态解析,上游改名也不挂 */
+function dshBin(): string {
+  try {
+    const pkg = JSON.parse(readFileSync(DSH_PKG, "utf8")) as { bin?: string | Record<string, string> };
+    const bin = typeof pkg.bin === "string" ? pkg.bin : (pkg.bin?.dsh ?? "lib/bin.js");
+    return join(dirname(DSH_PKG), bin);
+  } catch { return join(APP_DIR, "node_modules", "@deepseek-ai", "dsh", "lib", "bin.js"); }
+}
 const VERSIONS_FILE = join(RT_HOME, "versions.json");
 const PID_FILE = join(RT_STATE, "dsh.pid");
 const LOG_DIR = join(RT_STATE, "logs");
 const URL = "http://" + HOST + ":" + PORT;
 
-interface Versions { node?: string; dsh?: string; installedAt?: string; }
+interface Versions { node?: string; dsh?: string; installedAt?: string; checkedAt?: string; }
 
 function readVersions(): Versions { try { return JSON.parse(readFileSync(VERSIONS_FILE, "utf8")) as Versions; } catch { return {}; } }
 function writeVersions(v: Versions) { mkdirSync(RT_HOME, { recursive: true }); writeFileSync(VERSIONS_FILE, JSON.stringify({ ...v, installedAt: new Date().toISOString() }, null, 2) + "\n"); }
@@ -35,6 +47,10 @@ async function healthy(): Promise<boolean> {
 }
 function pidAlive(pid: number): boolean { if (!pid) return false; try { process.kill(pid, 0); return true; } catch { return false; } }
 function readPid(): number { try { return Number(readFileSync(PID_FILE, "utf8")) || 0; } catch { return 0; } }
+/** 当前最新一份运行日志(用于启动中等待时追踪存活) */
+function newestLog(): string | undefined {
+  try { const list = readdirSync(LOG_DIR).sort(); return list.length ? join(LOG_DIR, list[list.length - 1]) : undefined; } catch { return undefined; }
+}
 
 async function waitReady(seconds: number, log?: string): Promise<boolean> {
   const deadline = Date.now() + seconds * 1000;
@@ -46,16 +62,6 @@ async function waitReady(seconds: number, log?: string): Promise<boolean> {
   return false;
 }
 
-function run(cmd: string, args: string[], opts: { cwd?: string; env?: NodeJS.ProcessEnv; stdio?: "inherit" | "pipe" } = {}): { code: number; out: string } {
-  const res = spawnSync2(cmd, args, opts);
-  return res;
-}
-import { spawnSync } from "node:child_process";
-function spawnSync2(cmd: string, args: string[], opts: { cwd?: string; env?: NodeJS.ProcessEnv; stdio?: "inherit" | "pipe" }): { code: number; out: string } {
-  const r = spawnSync(cmd, args, { cwd: opts.cwd, env: opts.env ? { ...process.env, ...opts.env } : process.env, stdio: opts.stdio === "inherit" ? "inherit" : ["ignore", "pipe", "pipe"], encoding: "utf8" });
-  return { code: r.status ?? -1, out: (r.stdout ?? "") + (r.stderr ?? "") };
-}
-
 // ---------- 运行时安装(动态版本:上游最新) ----------
 async function installNode(ver: string): Promise<boolean> {
   const a = arch();
@@ -65,7 +71,8 @@ async function installNode(ver: string): Promise<boolean> {
   try {
     const res = await fetch(nodeTarballUrl(ver, a), { signal: AbortSignal.timeout(15 * 60 * 1000) });
     if (!res.ok) throw new Error("下载失败 " + res.status);
-    writeFileSync(tar, Buffer.from(await res.arrayBuffer()));
+    // 流式落盘,50MB 不占内存
+    await pipeline(Readable.fromWeb(res.body as unknown as WebReadableStream), createWriteStream(tar));
     const sumsRes = await fetch(nodeShasumsUrl(ver), { signal: AbortSignal.timeout(30000) });
     if (sumsRes.ok) {
       const sums = await sumsRes.text();
@@ -93,7 +100,22 @@ function installDsh(): boolean {
     writeFileSync(join(APP_DIR, "package.json"), JSON.stringify({ name: "dsh-runtime-app", private: true, dependencies: { "@deepseek-ai/dsh": "latest" } }, null, 2) + "\n");
     const r = spawnSync(NPM_BIN, ["install", "--no-audit", "--no-fund", "--loglevel=error"], { cwd: APP_DIR, env: { ...process.env, PATH: NODE_DIR + "/bin:" + process.env.PATH }, stdio: "inherit" });
     if (r.status !== 0) throw new Error("npm install 失败(" + r.status + ")");
-    const pkg = JSON.parse(readFileSync(join(APP_DIR, "node_modules", "@deepseek-ai", "dsh", "package.json"), "utf8")) as { version: string };
+    const pkg = JSON.parse(readFileSync(DSH_PKG, "utf8")) as { version: string };
+    // 剪除运行时不加载的调试/文档/测试文件(与 dmg 版保持一致)
+    const prune = (dir: string): void => {
+      for (const e of readdirSync(dir, { withFileTypes: true })) {
+        const p = join(dir, e.name);
+        if (e.isDirectory()) {
+          if (e.name === "test" || e.name === "tests" || e.name === "__tests__") { rmSync(p, { recursive: true, force: true }); continue; }
+          prune(p);
+        } else if (e.name.endsWith(".map") || e.name.endsWith(".md") || e.name === ".DS_Store") rmSync(p, { force: true });
+      }
+    };
+    prune(join(APP_DIR, "node_modules"));
+    // 剪除遥测依赖(启动环境 DSH_TELEMETRY_DISABLED=1,插件不会加载;21M 纯磁盘占用)
+    for (const sub of ["@opentelemetry", "@deepseek-ai/dsh-session-telemetry-otel"]) {
+      rmSync(join(APP_DIR, "node_modules", sub), { recursive: true, force: true });
+    }
     writeVersions({ ...readVersions(), dsh: pkg.version });
     console.log("dsh " + pkg.version + " 安装完成 (" + APP_DIR + ")");
     return true;
@@ -101,8 +123,23 @@ function installDsh(): boolean {
 }
 
 async function ensureRuntime(): Promise<boolean> {
-  const v = readVersions();
-  const [nodeLts, dshLatestV] = await Promise.all([nodeLatestLts(), dshLatest()]);
+  let v = readVersions();
+  // 包内预装运行时(versions.json 可能缺版本)→ 记录实际版本,避免重复下载/安装
+  if (!v.node && existsSync(NODE_BIN)) {
+    const r = spawnSync(NODE_BIN, ["--version"], { encoding: "utf8" });
+    if (r.status === 0) v = { ...v, node: (r.stdout ?? "").trim().replace(/^v/, "") };
+  }
+  if (!v.dsh && existsSync(DSH_PKG)) {
+    try {
+const pkg = JSON.parse(readFileSync(DSH_PKG, "utf8")) as { version: string };
+      v = { ...v, dsh: pkg.version };
+    } catch {}
+  }
+  if (v.node || v.dsh) writeVersions(v);
+  // 上游复查缓存:1 小时内跳过在线检查,双击/start 即时启动(离线也不卡 10 秒)
+  const stale = !v.checkedAt || Date.now() - new Date(v.checkedAt).getTime() > 60 * 60 * 1000;
+  const [nodeLts, dshLatestV] = stale ? await Promise.all([nodeLatestLts(), dshLatest()]) : [null, null];
+  if (nodeLts || dshLatestV) writeVersions({ ...v, checkedAt: new Date().toISOString() });
   if (nodeLts && v.node !== nodeLts) {
     console.log("检测到上游新版 Node: " + (v.node ?? "无") + " → " + nodeLts);
     if (!(await installNode(nodeLts))) { console.error("升级 Node 失败,继续用本地版本"); } else writeVersions({ ...v, node: nodeLts });
@@ -114,7 +151,7 @@ async function ensureRuntime(): Promise<boolean> {
   if (dshLatestV && v.dsh !== dshLatestV) {
     console.log("检测到上游新版 dsh: " + (v.dsh ?? "无") + " → " + dshLatestV);
     if (!installDsh()) console.error("升级 dsh 失败,继续用本地版本");
-  } else if (!existsSync(DSH_BIN)) {
+  } else if (!existsSync(dshBin())) {
     if (!installDsh()) return false;
   }
   return true;
@@ -122,19 +159,22 @@ async function ensureRuntime(): Promise<boolean> {
 
 // ---------- 生命周期 ----------
 async function cmdStart(autoOpen = true): Promise<number> {
-  if (await healthy()) { console.log("DeepSeek Harness 已在运行: " + URL); return 0; }
-  if (!existsSync(NODE_BIN) || !existsSync(DSH_BIN)) {
-    console.log("首次使用:自动安装运行时(跟随上游最新)...");
-    if (!(await ensureRuntime())) return 1;
-  } else {
-    await ensureRuntime(); // 在线检查上游最新,有新版自动升级
+  if (await healthy()) {
+    console.log("DeepSeek Harness 已在运行: " + URL);
+    // 重复双击/start:直接把 PWA/浏览器打开,而不是什么都不做
+    if (autoOpen && process.env.DSHCTL_NO_OPEN !== "1") openHarness();
+    return 0;
   }
+  if (!existsSync(NODE_BIN) || !existsSync(dshBin())) console.log("首次使用:自动安装运行时(跟随上游最新)...");
+  if (!(await ensureRuntime())) return 1;
   mkdirSync(LOG_DIR, { recursive: true });
+  // 日志只保留最近 10 个,避免长期累积
+  for (const f of readdirSync(LOG_DIR).sort().slice(0, -10)) rmSync(join(LOG_DIR, f), { force: true });
   const log = join(LOG_DIR, "dsh-" + new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19) + ".log");
   console.log("启动 dsh web (host=" + HOST + " port=" + PORT + "),日志: " + log);
-  const fd = (await import("node:fs")).openSync(log, "a");
-  const child = spawn(NODE_BIN, [DSH_BIN, "web", "--host", HOST, "--port", String(PORT)], {
-    detached: true, stdio: ["ignore", fd, fd], env: { ...process.env, DSH_HOME, PATH: NODE_DIR + "/bin:" + process.env.PATH },
+  const fd = openSync(log, "a");
+  const child = spawn(NODE_BIN, [dshBin(), "web", "--host", HOST, "--port", String(PORT)], {
+    detached: true, stdio: ["ignore", fd, fd], env: { ...process.env, DSH_HOME, DSH_TELEMETRY_DISABLED: "1", PATH: NODE_DIR + "/bin:" + process.env.PATH },
   });
   child.unref();
   writeFileSync(PID_FILE, String(child.pid));
@@ -167,7 +207,7 @@ async function cmdStatus(): Promise<number> {
   const ok = await healthy();
   console.log((ok ? "运行中" : "未运行") + " — " + URL);
   console.log("  node: " + (v.node ?? "未安装") + (existsSync(NODE_BIN) ? "" : "(缺失)"));
-  console.log("  dsh:  " + (v.dsh ?? "未安装") + (existsSync(DSH_BIN) ? "" : "(缺失)"));
+  console.log("  dsh:  " + (v.dsh ?? "未安装") + (existsSync(dshBin()) ? "" : "(缺失)"));
   console.log("  pid:  " + (pidAlive(pid) ? pid : "-"));
   return ok ? 0 : 1;
 }
@@ -188,8 +228,8 @@ function safariWebApps(): string[] {
 function openHarness(): void {
   const apps = safariWebApps();
   const hit = apps.find((a) => /deepseek|harness|dsh/i.test(a)) ?? apps[0];
-  if (hit) { try { execSync("open " + JSON.stringify(hit)); console.log("已打开 Dock Web App: " + hit); return; } catch {} }
-  try { execSync("open " + URL); console.log("已打开: " + URL); } catch { console.log("请手动打开: " + URL); }
+  if (hit) { try { spawnSync("open", [hit]); console.log("已打开 Dock Web App: " + hit); return; } catch {} }
+  try { spawnSync("open", [URL]); console.log("已打开: " + URL); } catch { console.log("请手动打开: " + URL); }
 }
 
 async function cmdOpen(): Promise<number> {
@@ -199,7 +239,7 @@ async function cmdOpen(): Promise<number> {
 }
 
 async function cmdLogs(): Promise<number> {
-  const logs = (await import("node:fs")).readdirSync(LOG_DIR).sort().slice(-3);
+  const logs = readdirSync(LOG_DIR).sort().slice(-3);
   if (!logs.length) { console.log("暂无日志"); return 0; }
   execSync("tail -n 50 " + logs.map((f) => join(LOG_DIR, f)).join(" "), { stdio: "inherit" });
   return 0;
@@ -228,9 +268,9 @@ async function cmdDoctor(): Promise<number> {
   console.log("=== dshctl doctor ===");
   console.log("  运行时目录: " + RT_HOME);
   console.log("  node: " + (v.node ?? "-") + " " + (existsSync(NODE_BIN) ? "✅" : "❌ 缺失"));
-  console.log("  dsh:  " + (v.dsh ?? "-") + " " + (existsSync(DSH_BIN) ? "✅" : "❌ 缺失"));
+  console.log("  dsh:  " + (v.dsh ?? "-") + " " + (existsSync(dshBin()) ? "✅" : "❌ 缺失"));
   console.log("  进程: " + (ok ? "✅ " + URL : "未运行"));
-  return existsSync(NODE_BIN) && existsSync(DSH_BIN) ? 0 : 1;
+  return existsSync(NODE_BIN) && existsSync(dshBin()) ? 0 : 1;
 }
 
 const cmd = process.argv[2] ?? "help";
