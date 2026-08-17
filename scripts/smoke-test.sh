@@ -4,7 +4,7 @@ set -euo pipefail
 # 完整走 install → doctor → start → status → HTTP → 幂等 → stop。
 # 用法: bash scripts/smoke-test.sh [dshctl路径]
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-DSHCTL="${1:-$ROOT/dist/stage-arm64/dshctl}"
+DSHCTL="${1:-$ROOT/dist/stage/dshctl}"
 [ -x "$DSHCTL" ] || { echo "先构建: node scripts/release.ts dev arm64" >&2; exit 1; }
 SMOKE_ROOT="${SMOKE_ROOT:-$(mktemp -d /tmp/dshctl-smoke.XXXXXX)}"
 SMOKE_PORT="${SMOKE_PORT:-13980}"

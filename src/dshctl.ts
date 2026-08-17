@@ -94,7 +94,7 @@ function installDsh(): boolean {
     const r = spawnSync(NPM_BIN, ["install", "--no-audit", "--no-fund", "--loglevel=error"], { cwd: APP_DIR, env: { ...process.env, PATH: NODE_DIR + "/bin:" + process.env.PATH }, stdio: "inherit" });
     if (r.status !== 0) throw new Error("npm install 失败(" + r.status + ")");
     const pkg = JSON.parse(readFileSync(join(APP_DIR, "node_modules", "@deepseek-ai", "dsh", "package.json"), "utf8")) as { version: string };
-    writeVersions({ dsh: pkg.version });
+    writeVersions({ ...readVersions(), dsh: pkg.version });
     console.log("dsh " + pkg.version + " 安装完成 (" + APP_DIR + ")");
     return true;
   } catch (e) { console.error("dsh 安装失败: " + (e as Error).message); return false; }

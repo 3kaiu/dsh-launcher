@@ -39,8 +39,7 @@ jobs:
           node-version: 24
       - name: 构建便携包
         run: |
-          npm i -g esbuild
-          node scripts/release.ts ci arm64
+          node scripts/release.ts ci
       - name: 冒烟测试(动态版本:node 最新 LTS + dsh latest)
-        run: bash scripts/smoke-test.sh dist/stage-arm64/dshctl
+        run: bash scripts/smoke-test.sh dist/stage/dshctl
 

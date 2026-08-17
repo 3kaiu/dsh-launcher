@@ -9,34 +9,26 @@ permissions:
   contents: write
 
 jobs:
-  build:
-    name: 构建 dshctl 便携包 (${{ matrix.arch }})
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 40
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { runner: macos-latest, arch: arm64 }
-          - { runner: macos-13, arch: x64 }
+  release:
+    name: 构建轻量发行包(不含运行时,零构建依赖)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - name: 构建(动态 node 最新 LTS + esbuild bundle + zip)
-        run: |
-          npm i -g esbuild
-          node scripts/release.ts "${{ github.ref_name }}#v" ${{ matrix.arch }}
+      - name: 构建(TS 源码 + 启动器,~10KB)
+        run: node scripts/release.ts "${{ github.ref_name }}#v"
       - name: 发布到 GitHub Releases
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           cd dist
           VER="${{ github.ref_name }}#v"
-          ZIP="dshctl-macos-${{ matrix.arch }}-$VER.zip"
+          ZIP="dshctl-$VER.zip"
           gh release create "${{ github.ref_name }}" "$ZIP" SHA256SUMS.txt VERSIONS.txt \
-            --title "dshctl ${{ github.ref_name }} (${{ matrix.arch }})" \
+            --title "dshctl ${{ github.ref_name }}" \
             --generate-notes \
             || gh release upload "${{ github.ref_name }}" "$ZIP" SHA256SUMS.txt VERSIONS.txt --clobber
 
