@@ -37,7 +37,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - name: 构建发行包(rsvg-convert 渲染官方图标)
+      - name: 构建 stage 供冒烟(ci 模式:跳过 dmg 打包,避免与 Release 重复构建)
         run: |
           brew install librsvg
           node scripts/release.ts ci

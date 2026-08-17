@@ -233,16 +233,20 @@ if (isMac) {
   sh("iconutil", ["-c", "icns", iconset, "-o", join(resDir, "icon.icns")]);
   // ad-hoc 签名(减少"无法验证开发者"提示)
   sh("codesign", ["--force", "-s", "-", "--deep", app]);
-  // dmg:App + 应用程序快捷方式(拖入即安装)
-  console.log("== 3/3 打包 dmg(App + Applications 快捷方式)");
-  const dmgSrc = join(dist, "dmg-src");
-  rmSync(dmgSrc, { recursive: true, force: true });
-  mkdirSync(dmgSrc, { recursive: true });
-  sh("cp", ["-R", app, dmgSrc]);
-  sh("ln", ["-s", "/Applications", join(dmgSrc, "Applications")]);
-  dmgPath = join(dist, "dsh-launcher-" + version + ".dmg");
-  // ULMO = LZMA 压缩,比 ULFO 再省约 15-20%,代价是构建时间(约数分钟)
-  sh("hdiutil", ["create", "-volname", "dsh-launcher-" + version, "-srcfolder", dmgSrc, "-ov", "-format", "ULMO", dmgPath]);
+  // dmg:App + 应用程序快捷方式(拖入即安装)。ci 模式只产出 stage 供冒烟,跳过打包,避免与 Release 重复构建
+  if (version !== "ci") {
+    console.log("== 3/3 打包 dmg(App + Applications 快捷方式)");
+    const dmgSrc = join(dist, "dmg-src");
+    rmSync(dmgSrc, { recursive: true, force: true });
+    mkdirSync(dmgSrc, { recursive: true });
+    sh("cp", ["-R", app, dmgSrc]);
+    sh("ln", ["-s", "/Applications", join(dmgSrc, "Applications")]);
+    dmgPath = join(dist, "dsh-launcher-" + version + ".dmg");
+    // ULMO = LZMA 压缩,比 ULFO 再省约 15-20%,代价是构建时间(约数分钟)
+    sh("hdiutil", ["create", "-volname", "dsh-launcher-" + version, "-srcfolder", dmgSrc, "-ov", "-format", "ULMO", dmgPath]);
+  } else {
+    console.log("== 3/3 跳过 dmg 打包(CI 冒烟模式,仅 stage)");
+  }
 } else {
   console.log("== 2/3 跳过 App/dmg(非 macOS,仅构建命令行包)");
   console.log("== 3/3 打包完成(命令行版)");
