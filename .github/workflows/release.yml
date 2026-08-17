@@ -19,16 +19,16 @@ jobs:
         with:
           node-version: 24
       - name: 构建(TS 源码 + 启动器,~10KB)
-        run: node scripts/release.ts "${{ github.ref_name }}#v"
+        run: node scripts/release.ts "${GITHUB_REF_NAME#v}"
       - name: 发布到 GitHub Releases
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           cd dist
-          VER="${{ github.ref_name }}#v"
+          VER="${GITHUB_REF_NAME#v}"
           ZIP="dshctl-$VER.zip"
           gh release create "${{ github.ref_name }}" "$ZIP" SHA256SUMS.txt VERSIONS.txt \
-            --title "dshctl ${{ github.ref_name }}" \
+            --title "dshctl ${GITHUB_REF_NAME}" \
             --generate-notes \
             || gh release upload "${{ github.ref_name }}" "$ZIP" SHA256SUMS.txt VERSIONS.txt --clobber
 
