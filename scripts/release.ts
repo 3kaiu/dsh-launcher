@@ -16,7 +16,7 @@ const root = join(__dir, "..");
 const dist = join(root, "dist");
 const version = process.argv[2] ?? "dev";
 const isMac = process.platform === "darwin";
-const APP_NAME = "DeepSeek Harness Launcher";
+const APP_NAME = "DeepSeek Harness";
 const APP_ID = "com.dshlauncher.app";
 
 function sh(cmd: string, args: string[], cwd?: string): boolean {

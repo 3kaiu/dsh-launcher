@@ -6,6 +6,6 @@ RES="$(cd "$DIR/../Resources" && pwd)"
 "$RES/wrapper.sh" start
 RC=$?
 if [ "$RC" -ne 0 ]; then
-  osascript -e "display dialog \"DeepSeek Harness 启动失败 (rc=$RC)。\n详情见 ~/.local/state/dsh-runtime/logs/\" buttons {\"OK\"} default button 1 with title \"DeepSeek Harness Launcher\"" >/dev/null 2>&1 || true
+  osascript -e "display dialog \"DeepSeek Harness 启动失败 (rc=$RC)。\n详情见 ~/.local/state/dsh-runtime/logs/\" buttons {\"OK\"} default button 1 with title \"DeepSeek Harness\"" >/dev/null 2>&1 || true
 fi
 exit "$RC"
