@@ -81,13 +81,19 @@ if (isMac) {
     writeFileSync(join(resDir, f), readFileSync(join(root, base, f)));
     if (f.endsWith(".sh")) sh("chmod", ["+x", join(resDir, f)]);
   }
-  // 图标:官方 CDN favicon(assets/icon.png,sips 放大)→ fallback 官方 svg(rsvg)→ 占位图
+  // 图标:构建时从官方 CDN 实时拉取(上游更新自动跟随)→ fallback 本地入库图 → svg(rsvg)→ 占位图
   let iconPng = join(dist, "icon.svg.png");
-  const iconPngSrc = join(root, "assets", "icon.png");
-  if (existsSync(iconPngSrc)) {
+  const iconUrl = "https://cdn.deepseek.com/platform/favicon.png";
+  const cdnTmp = join(dist, "icon-cdn.png");
+  const dl = spawnSync("curl", ["-fsSL", "--max-time", "15", "-o", cdnTmp, iconUrl]);
+  if (dl.status === 0 && existsSync(cdnTmp)) {
     iconPng = join(dist, "icon.png");
-    sh("sips", ["-z", "1024", "1024", iconPngSrc, "--out", iconPng]);
-    console.log("  (图标:官方 CDN favicon.png)");
+    sh("sips", ["-z", "1024", "1024", cdnTmp, "--out", iconPng]);
+    console.log("  (图标:CDN 实时下载 " + iconUrl + ")");
+  } else if (existsSync(join(root, "assets", "icon.png"))) {
+    iconPng = join(dist, "icon.png");
+    sh("sips", ["-z", "1024", "1024", join(root, "assets", "icon.png"), "--out", iconPng]);
+    console.log("  (图标:回退本地 assets/icon.png)");
   } else if (existsSync(join(root, "assets", "icon.svg"))) {
     sh("rsvg-convert", ["-w", "1024", "-h", "1024", join(root, "assets", "icon.svg"), "-o", iconPng]);
     console.log("  (图标:官方 favicon.svg)");
