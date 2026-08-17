@@ -126,8 +126,10 @@ if (isMac) {
         mkdirSync(binDir, { recursive: true });
         for (const f of ["node", "npm"]) {
           sh("cp", ["-P", join(tmp, "bin", f), join(binDir, f)]);
-          sh("chmod", ["+x", join(binDir, f)]);
         }
+        // strip 符号表再瘦 ~23MB(116→93);strip 使原签名失效,立即 ad-hoc 重签,否则探针/启动会被 kill
+        sh("strip", ["-x", join(binDir, "node")]);
+        sh("codesign", ["--force", "-s", "-", join(binDir, "node")]);
         for (const f of ["lib/node_modules/npm", "LICENSE"]) {
           const from = join(tmp, f);
           if (existsSync(from)) {
@@ -136,6 +138,8 @@ if (isMac) {
             sh("cp", ["-R", from, to]);
           }
         }
+        // bin/npm 是指向 ../lib/.../npm-cli.js 的符号链接,chmod 需在 lib 拷贝之后
+        for (const f of ["node", "npm"]) sh("chmod", ["+x", join(binDir, f)]);
         const probe = spawnSync(join(nodeDir, "bin", "node"), ["--version"], { encoding: "utf8" });
         if (probe.status === 0) console.log("  (已内置精简 node " + probe.stdout.trim() + " → Resources/node)");
         else { rmSync(nodeDir, { recursive: true, force: true }); console.error("  (警告: 内置 node 校验失败,首次启动自动下载)"); }
@@ -182,14 +186,17 @@ if (isMac) {
           }
         };
         walk(join(appDir, "node_modules"));
-        // 剪除遥测依赖:40K 的 dsh-session-telemetry-otel 插件拖入整个 @opentelemetry 树(21M),
-        // 启动环境已设官方开关 DSH_TELEMETRY_DISABLED=1,插件不会被加载,纯属磁盘占用
-        for (const sub of ["@opentelemetry", "@deepseek-ai/dsh-session-telemetry-otel"]) {
+        // 剪除遥测依赖(40K 的 dsh-session-telemetry-otel 插件拖入整个 @opentelemetry 树 21M)与
+        // 零引用的 mistralai(15M,pi-ai 声明但全树无任何 import)
+        // 启动环境已设官方开关 DSH_TELEMETRY_DISABLED=1,遥测插件不会被加载,纯属磁盘占用
+        for (const sub of ["@opentelemetry", "@deepseek-ai/dsh-session-telemetry-otel", "mistralai"]) {
           rmSync(join(appDir, "node_modules", sub), { recursive: true, force: true });
         }
         for (const d of [join(resDir, "node", "lib", "node_modules", "npm", "man"), join(resDir, "node", "lib", "node_modules", "npm", "html")]) {
           rmSync(d, { recursive: true, force: true });
         }
+        // npm 自身 node_modules 的调试/文档/测试文件同样剪除
+        walk(join(resDir, "node", "lib", "node_modules", "npm"));
         console.log("  (已剪除 sourcemap 与 npm 文档)");
         console.log("  (已预装 dsh " + ver + " → Resources/app,双击即用,离线可用)");
       } else {

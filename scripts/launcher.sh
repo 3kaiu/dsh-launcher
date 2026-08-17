@@ -9,11 +9,25 @@ LOG_DIR="$RT_STATE/logs"
 RUN_LOG="/tmp/dsh-launcher-$$.log"
 URL="http://127.0.0.1:${DSH_RT_PORT:-3080}/"
 
+# 上游有新版本且该版本未提示过 → 弹一次提示(静默检查结果由 wrapper 后台写入)
+notify_update() {
+  [ -f "$RT_HOME/.dsh-latest-check" ] || return 0
+  UP="$(sed -n 1p "$RT_HOME/.dsh-latest-check" 2>/dev/null)"
+  [ -n "$UP" ] || return 0
+  INST="$("$RT_HOME/node/bin/node" -e 'console.log(require(process.argv[1]).version)' "$RT_HOME/app/node_modules/@deepseek-ai/dsh/package.json" 2>/dev/null || true)"
+  { [ -n "$INST" ] && [ "$UP" != "$INST" ]; } || return 0
+  MARK="$RT_HOME/.dsh-update-notified-$UP"
+  [ -f "$MARK" ] && return 0
+  osascript -e "display dialog \"发现新版本 dsh $UP(当前 $INST)。\n在终端运行 dshctl update 即可升级,无需重新下载安装包。\" buttons {\"知道了\"} default button \"知道了\" with title \"DeepSeek Harness\"" >/dev/null 2>&1 || true
+  touch "$MARK"
+}
+
 # 已就绪:跳过一切对话框,直接交给 dshctl 打开 PWA(秒开)
 if curl -fsS -o /dev/null --max-time 2 "$URL" 2>/dev/null; then
   "$RES/wrapper.sh" start >"$RUN_LOG" 2>&1
   RC=$?
   rm -f "$RUN_LOG"
+  [ "$RC" -eq 0 ] && notify_update
   exit "$RC"
 fi
 
@@ -62,4 +76,5 @@ if [ "$RC" -ne 0 ]; then
   exit "$RC"
 fi
 rm -f "$RUN_LOG"
+notify_update
 exit 0

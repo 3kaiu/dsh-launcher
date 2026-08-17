@@ -112,8 +112,8 @@ function installDsh(): boolean {
       }
     };
     prune(join(APP_DIR, "node_modules"));
-    // 剪除遥测依赖(启动环境 DSH_TELEMETRY_DISABLED=1,插件不会加载;21M 纯磁盘占用)
-    for (const sub of ["@opentelemetry", "@deepseek-ai/dsh-session-telemetry-otel"]) {
+    // 剪除遥测依赖(启动环境 DSH_TELEMETRY_DISABLED=1,插件不会加载)与零引用的 mistralai(15M)
+    for (const sub of ["@opentelemetry", "@deepseek-ai/dsh-session-telemetry-otel", "mistralai"]) {
       rmSync(join(APP_DIR, "node_modules", sub), { recursive: true, force: true });
     }
     writeVersions({ ...readVersions(), dsh: pkg.version });
@@ -182,11 +182,28 @@ async function ensureRuntime(): Promise<boolean> {
 }
 
 // ---------- 生命周期 ----------
+// 上游有新版本且该版本未提示过 → 打印一次提示(wrapper 后台写入缓存)
+function checkUpdateNotice(): void {
+  try {
+    const f = join(RT_HOME, ".dsh-latest-check");
+    if (!existsSync(f)) return;
+    const up = readFileSync(f, "utf8").split("\n")[0];
+    if (!up) return;
+    const cur = readVersions().dsh;
+    if (!cur || up === cur) return;
+    const mark = join(RT_HOME, ".dsh-update-notified-" + up);
+    if (existsSync(mark)) return;
+    console.log("提示: 上游 dsh 有新版本 " + up + "(当前 " + cur + "),运行 dshctl update 升级");
+    writeFileSync(mark, "");
+  } catch {}
+}
+
 async function cmdStart(autoOpen = true): Promise<number> {
   if (await healthy()) {
     console.log("DeepSeek Harness 已在运行: " + URL);
     // 重复双击/start:直接把 PWA/浏览器打开,而不是什么都不做
     if (autoOpen && process.env.DSHCTL_NO_OPEN !== "1") openHarness();
+    checkUpdateNotice();
     return 0;
   }
   // 启动中(pid 存活但未就绪):不重复拉起,等待当前实例就绪(避免二次双击抢端口报错)
@@ -195,6 +212,7 @@ async function cmdStart(autoOpen = true): Promise<number> {
     if (await waitReady(120, newestLog())) {
       console.log("已就绪: " + URL);
       if (autoOpen && process.env.DSHCTL_NO_OPEN !== "1") openHarness();
+      checkUpdateNotice();
       return 0;
     }
     console.error("等待就绪超时,日志: " + LOG_DIR);
@@ -218,6 +236,7 @@ async function cmdStart(autoOpen = true): Promise<number> {
     if (autoOpen && process.env.DSHCTL_NO_OPEN !== "1") {
       openHarness();
     } else { console.log("提示: Safari 打开 " + URL + " → 文件 → 添加到程序坞(全屏 Web App)"); }
+    checkUpdateNotice();
     return 0;
   }
   rmSync(PID_FILE, { force: true });

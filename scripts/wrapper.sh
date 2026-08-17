@@ -56,6 +56,11 @@ if [ ! -x "$RT_NODE" ]; then
     cp -P "$TMP/x/bin/npm" "$RT_HOME/node/bin/npm"
     cp -R "$TMP/x/lib/node_modules/npm" "$RT_HOME/node/lib/node_modules/"
     chmod +x "$RT_HOME/node/bin/node" "$RT_HOME/node/bin/npm"
+    # strip 符号表再瘦 ~23MB;strip 会使原签名失效,必须立即 ad-hoc 重签,失败则恢复原二进制
+    if ! strip -x "$RT_HOME/node/bin/node" 2>/dev/null || ! codesign --force -s - "$RT_HOME/node/bin/node" 2>/dev/null; then
+      echo "(node 瘦身失败,恢复原二进制)"
+      cp -P "$TMP/x/bin/node" "$RT_HOME/node/bin/node"
+    fi
     rm -rf "$TMP"
     NODE_VER="$VER"
   fi
@@ -68,6 +73,26 @@ if [ ! -f "$RT_HOME/app/node_modules/@deepseek-ai/dsh/package.json" ]; then
     rm -rf "$RT_HOME/app"
     cp -c -R "$BUNDLED_APP" "$RT_HOME/app" 2>/dev/null || cp -R "$BUNDLED_APP" "$RT_HOME/app"
     DSH_VER="$("$RT_NODE" -e 'console.log(require(process.argv[1]).version)' "$RT_HOME/app/node_modules/@deepseek-ai/dsh/package.json" 2>/dev/null || true)"
+  fi
+fi
+
+# 静默检查上游 dsh 新版本(后台,24h 缓存),供启动器/CLI 提示 dshctl update;离线或失败则跳过
+UPSTREAM_CACHE="$RT_HOME/.dsh-latest-check"
+if [ -f "$RT_HOME/app/node_modules/@deepseek-ai/dsh/package.json" ]; then
+  CACHE_AGE="$(sed -n 2p "$UPSTREAM_CACHE" 2>/dev/null || echo 0)"
+  case "$CACHE_AGE" in ''|*[!0-9]*) CACHE_AGE=0;; esac
+  if [ "$(($(date +%s) - CACHE_AGE))" -gt 86400 ]; then
+    ( "$RT_NODE" -e '
+      const fs = require("fs"), https = require("https");
+      const f = process.argv[1];
+      https.get("https://registry.npmjs.org/@deepseek-ai/dsh/latest", { timeout: 8000 }, (r) => {
+        if (r.statusCode !== 200) return;
+        let b = ""; r.on("data", (c) => (b += c));
+        r.on("end", () => {
+          try { const v = JSON.parse(b).version; fs.writeFileSync(f, v + "\n" + Math.floor(Date.now() / 1000)); } catch {}
+        });
+      }).on("error", () => {}).setTimeout(8000, function () { this.destroy(); });
+    ' "$UPSTREAM_CACHE" & ) 2>/dev/null
   fi
 fi
 
