@@ -46,12 +46,23 @@ for (const [src, dst] of [
   ["src/dshctl.ts", "dshctl.ts"],
   ["src/versions.ts", "versions.ts"],
   ["scripts/wrapper.sh", "wrapper.sh"],
+  ["launchd/com.dshlauncher.daemon.plist", "com.dshlauncher.daemon.plist"],
 ]) {
   writeFileSync(join(stage, dst), readFileSync(join(root, src)));
 }
 writeFileSync(join(stage, "dshctl"), readFileSync(join(root, "scripts", "wrapper.sh")));
 writeFileSync(join(stage, "install.sh"), readFileSync(join(root, "scripts", "install.sh")));
 sh("chmod", ["+x", join(stage, "dshctl")]);
+// macOS 守护(极轻 C 二进制,~1.3MB RSS):clang 编译 + ad-hoc 签名,失败仅告警(守护功能缺失,其余不受影响)
+if (isMac) {
+  const cc = spawnSync("clang", ["-O2", "-Wall", "-Wextra", "-o", join(stage, "daemon"), join(root, "src", "daemon.c")], { encoding: "utf8" });
+  if (cc.status === 0) {
+    sh("codesign", ["--force", "-s", "-", join(stage, "daemon")]);
+    console.log("  (守护 daemon: clang 编译完成)");
+  } else {
+    console.error("  (警告: 守护编译失败,daemon on 不可用)\n" + (cc.stderr ?? "").trim());
+  }
+}
 sh("zip", ["-qr", join(dist, "dshctl-" + version + ".zip"), "."], stage);
 
 // ---- macOS 双击 App + dmg ----
@@ -87,10 +98,14 @@ if (isMac) {
   // 启动器 + 资源
   writeFileSync(join(macosDir, "Launcher"), readFileSync(join(root, "scripts", "launcher.sh")));
   sh("chmod", ["+x", join(macosDir, "Launcher")]);
-  for (const f of ["wrapper.sh", "dshctl.ts", "versions.ts"]) {
-    const base = f.endsWith(".ts") ? "src" : "scripts";
+  for (const f of ["wrapper.sh", "dshctl.ts", "versions.ts", "com.dshlauncher.daemon.plist"]) {
+    const base = f.endsWith(".ts") ? "src" : f.endsWith(".plist") ? "launchd" : "scripts";
     writeFileSync(join(resDir, f), readFileSync(join(root, base, f)));
     if (f.endsWith(".sh")) sh("chmod", ["+x", join(resDir, f)]);
+  }
+  if (existsSync(join(stage, "daemon"))) {
+    writeFileSync(join(resDir, "daemon"), readFileSync(join(stage, "daemon")));
+    sh("chmod", ["+x", join(resDir, "daemon")]);
   }
   // 内置精简 node 最新 LTS(仅 bin/node + bin/npm + lib/node_modules/npm,首次引导免下载)
   {

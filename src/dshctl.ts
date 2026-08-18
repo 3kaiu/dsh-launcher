@@ -34,8 +34,12 @@ function dshBin(): string {
 }
 const VERSIONS_FILE = join(RT_HOME, "versions.json");
 const PID_FILE = join(RT_STATE, "dsh.pid");
+/** dsh 内部端口单一事实源:守护启动 dsh 时写入,供守护重启后发现(全链路自动匹配) */
+const DSH_JSON = join(RT_STATE, "dsh.json");
 const LOG_DIR = join(RT_STATE, "logs");
 const URL = "http://" + HOST + ":" + PORT;
+/** 由守护(dsah spawn_wrapper)置位,防递归:守护→dshctl→再打守护 */
+const BYPASS_DAEMON = process.env.DSHCTL_BYPASS_DAEMON === "1";
 
 interface Versions { node?: string; dsh?: string; installedAt?: string; checkedAt?: string; }
 
@@ -199,6 +203,25 @@ function checkUpdateNotice(): void {
 }
 
 async function cmdStart(autoOpen = true): Promise<number> {
+  // 守护在线 → 全权交给守护(它挑内部端口并写 dsh.json;PWA 关闭后也会自动停)
+  const dh = BYPASS_DAEMON ? null : await daemonHealth();
+  if (dh) {
+    if (dh.dsh) {
+      console.log("DeepSeek Harness 已在运行: " + URL);
+      // 重复双击/start:直接把 PWA/浏览器打开,而不是什么都不做
+      if (autoOpen && process.env.DSHCTL_NO_OPEN !== "1") openHarness();
+      checkUpdateNotice();
+      return 0;
+    }
+    console.log("通过守护拉起 dsh(内部端口自动匹配)...");
+    if (!(await daemonPost("/wake"))) { console.error("守护无响应,请稍后重试(dshctl daemon status)"); return 1; }
+    if (!(await waitDaemonReady(120))) { console.error("等待就绪超时,日志: " + LOG_DIR); return 1; }
+    console.log("已就绪: " + URL);
+    if (autoOpen && process.env.DSHCTL_NO_OPEN !== "1") openHarness();
+    checkUpdateNotice();
+    return 0;
+  }
+  // 直启(无守护 / 守护唤醒的子进程):dsh 直接占用 DSH_RT_PORT,并写 dsh.json 供守护发现
   if (await healthy()) {
     console.log("DeepSeek Harness 已在运行: " + URL);
     // 重复双击/start:直接把 PWA/浏览器打开,而不是什么都不做
@@ -231,6 +254,7 @@ async function cmdStart(autoOpen = true): Promise<number> {
   });
   child.unref();
   writeFileSync(PID_FILE, String(child.pid));
+  writeFileSync(DSH_JSON, JSON.stringify({ port: PORT }) + "\n");
   if (await waitReady(120, log)) {
     console.log("已就绪: " + URL);
     if (autoOpen && process.env.DSHCTL_NO_OPEN !== "1") {
@@ -245,24 +269,37 @@ async function cmdStart(autoOpen = true): Promise<number> {
 }
 
 async function cmdStop(): Promise<number> {
+  const dh = BYPASS_DAEMON ? null : await daemonHealth();
+  if (dh) {
+    if (!dh.dsh) { console.log("未在运行"); return 0; }
+    if (!(await daemonPost("/stop"))) { console.error("守护无响应,请稍后重试(dshctl daemon status)"); return 1; }
+    for (let i = 0; i < 30; i++) {
+      const h = await daemonHealth();
+      if (h && !h.dsh) break;
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+    console.log("已停止");
+    return 0;
+  }
   const pid = readPid();
   if (!pidAlive(pid)) { console.log("未在运行"); rmSync(PID_FILE, { force: true }); return 0; }
   try { process.kill(pid, "SIGTERM"); } catch {}
   for (let i = 0; i < 30; i++) { if (!(await healthy()) && !pidAlive(readPid())) break; await new Promise((r) => setTimeout(r, 1000)); }
   if (pidAlive(readPid())) { try { process.kill(readPid(), "SIGKILL"); } catch {} }
   rmSync(PID_FILE, { force: true });
+  rmSync(DSH_JSON, { force: true });
   console.log("已停止");
   return 0;
 }
 
 async function cmdStatus(): Promise<number> {
   const v = readVersions();
-  const pid = readPid();
-  const ok = await healthy();
-  console.log((ok ? "运行中" : "未运行") + " — " + URL);
+  const dh = BYPASS_DAEMON ? null : await daemonHealth();
+  const ok = dh ? dh.dsh : await healthy();
+  console.log((ok ? "运行中" : "未运行") + " — " + URL + (dh ? " (守护在线)" : ""));
   console.log("  node: " + (v.node ?? "未安装") + (existsSync(NODE_BIN) ? "" : "(缺失)"));
   console.log("  dsh:  " + (v.dsh ?? "未安装") + (existsSync(dshBin()) ? "" : "(缺失)"));
-  console.log("  pid:  " + (pidAlive(pid) ? pid : "-"));
+  console.log("  pid:  " + (pidAlive(readPid()) ? readPid() : "-"));
   return ok ? 0 : 1;
 }
 
@@ -287,6 +324,16 @@ function openHarness(): void {
 }
 
 async function cmdOpen(): Promise<number> {
+  const dh = BYPASS_DAEMON ? null : await daemonHealth();
+  if (dh) {
+    if (!dh.dsh) {
+      console.log("未运行,先启动...");
+      await daemonPost("/wake");
+      if (!(await waitDaemonReady(120))) { console.error("启动失败,日志: " + LOG_DIR); return 1; }
+    }
+    openHarness();
+    return 0;
+  }
   if (!(await healthy())) { console.log("未运行,先启动..."); if ((await cmdStart(false)) !== 0) return 1; }
   openHarness();
   return 0;
@@ -327,6 +374,76 @@ async function cmdDoctor(): Promise<number> {
   return existsSync(NODE_BIN) && existsSync(dshBin()) ? 0 : 1;
 }
 
+// ---------- 常驻唤醒守护(唯一端口 DSH_RT_PORT:守护占端口,内部端口自动分配并写入 dsh.json) ----------
+const AGENT_DIR = join(homedir(), "Library", "LaunchAgents");
+const AGENT = join(AGENT_DIR, "com.dshlauncher.daemon.plist");
+const AGENT_LABEL = "com.dshlauncher.daemon";
+const DAEMON_BIN = join(dirname(process.argv[1]), "daemon");
+
+/** 守护在线状态(打唯一端口 /health;无守护时端口上是 dsh 或无人监听 → null) */
+async function daemonHealth(): Promise<{ dsh: boolean } | null> {
+  try {
+    const r = await fetch(URL + "/health", { signal: AbortSignal.timeout(2000) });
+    if (!r.ok) return null;
+    const h = (await r.json()) as { dsh?: boolean };
+    return { dsh: h.dsh === true };
+  } catch { return null; }
+}
+
+/** 通过守护拉起/停止 dsh(守护负责挑内部端口并写 dsh.json,端口自动匹配) */
+async function daemonPost(path: string): Promise<boolean> {
+  try { return (await fetch(URL + path, { method: "POST", signal: AbortSignal.timeout(5000) })).ok; } catch { return false; }
+}
+
+async function waitDaemonReady(seconds: number): Promise<boolean> {
+  const deadline = Date.now() + seconds * 1000;
+  while (Date.now() < deadline) {
+    const dh = await daemonHealth();
+    if (dh?.dsh) return true;
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+  return false;
+}
+
+async function cmdDaemon(action: string): Promise<number> {
+  if (action === "on") {
+    const tpl = join(dirname(process.argv[1]), "com.dshlauncher.daemon.plist");
+    if (!existsSync(tpl) || !existsSync(DAEMON_BIN)) { console.error("缺少守护文件(此发行包不含 macOS daemon,请用完整包/dmg 版)"); return 1; }
+    const uid = process.getuid?.() ?? 0;
+    mkdirSync(AGENT_DIR, { recursive: true });
+    const text = readFileSync(tpl, "utf8")
+      .replaceAll("__DAEMON_BIN__", DAEMON_BIN)
+      .replaceAll("__RT_HOME__", RT_HOME)
+      .replaceAll("__RT_STATE__", RT_STATE)
+      .replaceAll("__LOG_DIR__", LOG_DIR);
+    writeFileSync(AGENT, text);
+    const boot = spawnSync("launchctl", ["bootstrap", "gui/" + uid, AGENT]);
+    if (boot.status !== 0) spawnSync("launchctl", ["enable", "gui/" + uid + "/" + AGENT_LABEL]);
+    spawnSync("launchctl", ["kickstart", "-k", "gui/" + uid + "/" + AGENT_LABEL]);
+    console.log("守护已注册(LaunchAgent " + AGENT_LABEL + "),PWA 入口: " + URL + "/");
+    console.log("在 Safari 打开该地址 → 文件 → 添加到程序坞,以后点击 PWA 即自动拉起/关闭 dsh");
+    return 0;
+  }
+  if (action === "off") {
+    const uid = process.getuid?.() ?? 0;
+    spawnSync("launchctl", ["bootout", "gui/" + uid + "/" + AGENT_LABEL]);
+    rmSync(AGENT, { force: true });
+    console.log("守护已注销(如无其他常驻用途,dsh 将只在 dshctl start 时运行)");
+    return 0;
+  }
+  if (action === "status") {
+    const uid = process.getuid?.() ?? 0;
+    const loaded = spawnSync("launchctl", ["print", "gui/" + uid + "/" + AGENT_LABEL], { stdio: "ignore" }).status === 0;
+    const alive = await daemonHealth();
+    console.log("守护: " + (loaded ? "✅ 已加载" : "未加载") + " / " + (alive ? "✅ 在线 " + URL : "离线"));
+    console.log("  dsh: " + ((alive?.dsh) ? "运行中" : "未运行"));
+    console.log("  注册: dshctl daemon on / 注销: dshctl daemon off");
+    return loaded && alive ? 0 : 1;
+  }
+  console.log("用法: dshctl daemon on|off|status   (注册/注销/查看常驻唤醒守护,PWA 自动拉起用)");
+  return 1;
+}
+
 const cmd = process.argv[2] ?? "help";
 const main = async () => {
   switch (cmd) {
@@ -340,10 +457,11 @@ const main = async () => {
     case "update": process.exit(await cmdUpdate()); break;
     case "watch": process.exit(await cmdWatch()); break;
     case "doctor": process.exit(await cmdDoctor()); break;
+    case "daemon": process.exit(await cmdDaemon(process.argv[3] ?? "help")); break;
     default:
       console.log("dshctl — DeepSeek Harness 运行时管理器(动态版本:node 最新 LTS + dsh latest)");
-      console.log("用法: dshctl install|start|stop|restart|status|logs|open|update|watch|doctor");
-      console.log("环境: DSH_RT_HOME DSH_RT_STATE DSH_RT_PORT DSH_RT_HOST DSH_HOME DSHCTL_NO_OPEN");
+      console.log("用法: dshctl install|start|stop|restart|status|logs|open|update|watch|doctor|daemon");
+      console.log("环境: DSH_RT_HOME DSH_RT_STATE DSH_RT_PORT DSH_RT_HOST DSH_HOME DSH_RT_IDLE_STOP_SECS DSHCTL_NO_OPEN");
       console.log("首次 start 自动完成: 下载最新 Node LTS(SHA-256 校验)→ 安装官方 dsh@latest → 启动 → 打开");
   }
 };
