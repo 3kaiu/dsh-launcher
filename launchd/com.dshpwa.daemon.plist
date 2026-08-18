@@ -20,6 +20,8 @@
   <key>KeepAlive</key><true/>
   <key>EnvironmentVariables</key>
   <dict>
+    <key>HOME</key><string>__HOME__</string>
+    <key>NODE_OPTIONS</key><string>--use-system-ca</string>
     <key>DSH_RT_HOME</key><string>__RT_HOME__</string>
     <key>DSH_RT_STATE</key><string>__RT_STATE__</string>
     <key>DSH_RT_PORT</key><string>__DSH_RT_PORT__</string>

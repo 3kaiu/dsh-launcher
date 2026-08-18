@@ -249,6 +249,7 @@ if [ -z "${DSH_INSTALL_NO_AGENT:-}" ]; then
     AGENT="$AGENT_DIR/com.dshpwa.daemon.plist"
     mkdir -p "$AGENT_DIR"
     sed -e "s|__DAEMON_BIN__|$RT_HOME/daemon|g" \
+        -e "s|__HOME__|$HOME|g" \
         -e "s|__RT_HOME__|$RT_HOME|g" \
         -e "s|__RT_STATE__|$RT_STATE|g" \
         -e "s|__LOG_DIR__|$LOG_DIR|g" \
