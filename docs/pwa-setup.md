@@ -8,7 +8,7 @@
 终端运行一条命令(自动下载发行包并安装):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/3kaiu/dsh-launcher/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/3kaiu/dsh-pwa/main/scripts/install.sh | bash
 ```
 
 或从 GitHub Releases 下载 `dsh-launcher.zip` 解压后 `bash install.sh`(离线,含预编译守护)。

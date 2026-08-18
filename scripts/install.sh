@@ -12,7 +12,7 @@ if [ ! -f "$ROOT/src/daemon.c" ] && [ ! -f "$ROOT/daemon" ]; then
   echo "== 自动下载发行包(dsh-launcher/releases/latest) =="
   TMP="$(mktemp -d /tmp/dsh-launcher.XXXXXX)"
   curl -fSL --max-time 300 -o "$TMP/pkg.zip" \
-    "https://github.com/3kaiu/dsh-launcher/releases/latest/download/dsh-launcher.zip" \
+    "https://github.com/3kaiu/dsh-pwa/releases/latest/download/dsh-launcher.zip" \
     || { echo "发行包下载失败(仓库尚无 release?)" >&2; exit 1; }
   ( cd "$TMP" && unzip -q pkg.zip )
   rm -f "$TMP/pkg.zip"

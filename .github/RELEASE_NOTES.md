@@ -1,12 +1,16 @@
 # 安装
 
-一键安装(复制整行到终端运行):
+方式一(推荐,一条命令自动完成):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/3kaiu/dsh-launcher/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/3kaiu/dsh-pwa/main/scripts/install.sh | bash
 ```
 
-或下载发行包解压后 `bash install.sh`(离线,含预编译守护)。
+方式二(手动下载发行包):
+
+```bash
+curl -LO https://github.com/3kaiu/dsh-pwa/releases/latest/download/dsh-launcher.zip && unzip dsh-launcher.zip && bash install.sh
+```
 
 安装后打开 http://127.0.0.1:3080/ → Safari 文件 → 添加到程序坞。
 
