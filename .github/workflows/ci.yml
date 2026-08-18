@@ -11,35 +11,13 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  check:
-    name: 类型检查 + 单测 (TypeScript)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-      - name: 依赖(devDeps + typescript)
-        run: |
-          npm ci
-          npm i -g typescript@^5.6
-      - name: TS 类型检查
-        run: tsc --noEmit
-      - name: 单测(node --test,原生 TS)
-        run: node --test test/versions.test.mjs
-
-  integration:
-    name: 集成冒烟(便携包真实安装上游最新 node + dsh)
-    runs-on: macos-latest
+  build:
+    name: 编译守护 + 一键安装冒烟(真实上游 node + dsh)
+    runs-on: macos-14-arm64
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-      - name: 构建 stage 供冒烟(ci 模式:跳过 dmg 打包,避免与 Release 重复构建)
-        run: |
-          node scripts/release.ts ci
-      - name: 冒烟测试(动态版本:node 最新 LTS + dsh latest)
-        run: bash scripts/smoke-test.sh dist/stage/dshctl
-
+      - name: 守护编译检查
+        run: clang -O2 -Wall -Wextra -o /tmp/daemon src/daemon.c && codesign --force -s - /tmp/daemon
+      - name: 一键安装冒烟(install → 守护 → 唤醒 → 透传 → 空闲自停)
+        run: bash scripts/smoke-test.sh

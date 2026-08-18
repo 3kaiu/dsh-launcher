@@ -2,12 +2,12 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <!--
-  常驻唤醒守护(隐形基础设施,~1.3MB RSS):登录即加载,只应答引导页 + /health + /wake,/stop,不跑 dsh。
+  常驻唤醒守护(隐形基础设施,~1.3MB RSS):登录即加载,只应答引导页 + /health + /wake + /stop,不跑 dsh。
   唯一端口 DSH_RT_PORT(默认 3080):dsh 未运行 → 任意路径返回引导页;dsh 运行中 → 双向透传。
-  dsh 内部端口自动分配并写入 RT_STATE/dsh.json,全链路自动匹配,无硬编码双端口。
-  PWA(程序坞 Web App,start_url 指向本端口)检测到 dsh 未运行 → POST /wake → 守护拉起 dsh。
+  dsh 内部端口启动时自动分配并写入 RT_STATE/dsh.json;运行时位置读 RT_HOME/run.json。
+  PWA(程序坞 Web App,start_url 指向本端口)检测到 dsh 未运行 → POST /wake → 守护直启 dsh。
   PWA 关闭 → 连接归零 DSH_RT_IDLE_STOP_SECS(默认 60)秒 → 守护自动停止 dsh。
-  由 Launcher.app(scripts/launcher.sh)或 `dshctl daemon on` 自动生成到 ~/Library/LaunchAgents/。
+  由 scripts/install.sh 自动生成到 ~/Library/LaunchAgents/。
   占位符:__DAEMON_BIN__/__RT_HOME__/__RT_STATE__/__LOG_DIR__
 -->
 <dict>

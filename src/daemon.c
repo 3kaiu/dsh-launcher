@@ -2,13 +2,14 @@
 // 最简设计:单一端口(DSH_RT_PORT,默认 3080,全链路自动匹配,无硬编码双端口)。
 //   dsh 未运行 → 伺服引导页(任意路径);PWA 打开引导页 → 自动 /wake → dsh 在内部端口启动。
 //   dsh 运行中 → 双向透传;PWA 关闭 → 连接归零 N 秒(DSH_RT_IDLE_STOP_SECS,默认 60)→ 自动停止 dsh。
-//   dsh 内部端口:启动时自动挑选空闲端口,写入 RT_STATE/dsh.json 供 /health 与重启后发现。
+//   dsh 内部端口:启动时自动挑选空闲端口,写入 RT_STATE/dsh.json。
+//   dsh 位置:install.sh 装好运行时后写 RT_HOME/run.json({"node":...,"dsh":...}),守护直接 exec。
 // 端点(守护自身处理,不透传):
 //   GET  /health               → {"dsh":bool,"port":int,"pid":int}
-//   POST /wake                 → 未运行则拉起 dsh(复用 wrapper.sh + dshctl 生命周期)
-//   POST /stop                 → 停止 dsh
+//   POST /wake                 → 未运行则拉起 dsh(直启 node + 官方 dsh web)
+//   POST /stop                 → 停止 dsh(SIGTERM → 超时 SIGKILL)
 //   GET  /manifest.webmanifest → PWA manifest(Safari「添加到程序坞」用;仅 dsh 未运行时有意义)
-// 构建: clang -O2 -o daemon daemon.c(release.ts 构建时编译,产物随包分发)
+// 构建: clang -O2 -o daemon daemon.c(CI/install.sh 编译)
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -26,8 +27,9 @@
 #include <time.h>
 #include <unistd.h>
 
-static char RT_HOME[1024], RT_STATE[1024], LOG_DIR[1024], WRAPPER[1024], BOOT_PAGE[16384];
-static char DSH_JSON[1100], PID_FILE[1100];
+static char RT_HOME[1024], RT_STATE[1024], LOG_DIR[1024], LOG_FILE[1100], BOOT_PAGE[16384];
+static char DSH_JSON[1100], PID_FILE[1100], DSH_HOME[1024];
+static char NODE_BIN[1024], DSH_BIN[1024];
 static int PORT = 3080, IDLE_STOP = 60;
 
 static const char *env_or(const char *k, const char *d) {
@@ -44,14 +46,11 @@ static void build_paths(void) {
   if (!rs[0]) { char s[1024]; snprintf(s, sizeof s, "%s/.local/state/dsh-runtime", home); rs = s; }
   snprintf(RT_STATE, sizeof RT_STATE, "%s", rs);
   snprintf(LOG_DIR, sizeof LOG_DIR, "%s/logs", rs);
+  snprintf(LOG_FILE, sizeof LOG_FILE, "%s/dsh.log", LOG_DIR);
   snprintf(DSH_JSON, sizeof DSH_JSON, "%s/dsh.json", rs);
   snprintf(PID_FILE, sizeof PID_FILE, "%s/dsh.pid", rs);
-  char exe[4096]; uint32_t sz = sizeof exe;
-  if (_NSGetExecutablePath(exe, &sz) == 0) {
-    char *slash = strrchr(exe, '/');
-    if (slash) *slash = 0;
-    snprintf(WRAPPER, sizeof WRAPPER, "%s/wrapper.sh", exe);
-  } else snprintf(WRAPPER, sizeof WRAPPER, "wrapper.sh");
+  snprintf(DSH_HOME, sizeof DSH_HOME, "%s", env_or("DSH_HOME", ""));
+  if (!DSH_HOME[0]) snprintf(DSH_HOME, sizeof DSH_HOME, "%s/.dsh", home);
   const char *p = getenv("DSH_RT_PORT");
   if (p && *p) PORT = atoi(p);
   p = getenv("DSH_RT_IDLE_STOP_SECS");
@@ -59,7 +58,34 @@ static void build_paths(void) {
   mkdir(LOG_DIR, 0755);
 }
 
-// ---------- dsh 状态(端口来自 dsh.json,由 dshctl 每次启动时写入) ----------
+// ---------- run.json(install.sh 写入:运行时位置) ----------
+static void extract_str(const char *b, const char *key, char *out, size_t cap) {
+  char pat[64]; snprintf(pat, sizeof pat, "\"%s\"", key);
+  const char *k = strstr(b, pat);
+  if (!k) { out[0] = 0; return; }
+  const char *q = strchr(k + strlen(pat), ':');
+  q = q ? strchr(q, '"') : NULL;
+  if (!q) { out[0] = 0; return; }
+  q++;
+  const char *e = strchr(q, '"');
+  size_t l = e ? (size_t)(e - q) : strlen(q);
+  if (l >= cap) l = cap - 1;
+  memcpy(out, q, l); out[l] = 0;
+}
+
+static void read_run(void) {
+  char p[1100]; snprintf(p, sizeof p, "%s/run.json", RT_HOME);
+  int fd = open(p, O_RDONLY);
+  if (fd < 0) return;
+  char b[4096]; ssize_t n = read(fd, b, sizeof b - 1);
+  close(fd);
+  if (n <= 0) return;
+  b[n] = 0;
+  extract_str(b, "node", NODE_BIN, sizeof NODE_BIN);
+  extract_str(b, "dsh", DSH_BIN, sizeof DSH_BIN);
+}
+
+// ---------- dsh 状态(端口来自 dsh.json,由守护启动 dsh 时写入) ----------
 static int dsh_port = 0;
 
 static int read_state_port(void) {
@@ -100,35 +126,6 @@ static int dsh_up(void) {
   return ok;
 }
 
-static int pick_port(void);
-
-// wrapper 子进程(唤醒/停止)不计入活跃连接,否则 waitpid 会把它们误算为连接关闭
-static pid_t wrapper_pids[8];
-static int wrapper_n = 0;
-static int is_wrapper(pid_t p) { for (int i = 0; i < wrapper_n; i++) if (wrapper_pids[i] == p) return 1; return 0; }
-
-static void spawn_wrapper(const char *arg) {
-  pid_t pid = fork();
-  if (pid != 0) {
-    if (wrapper_n < 8) wrapper_pids[wrapper_n++] = pid;
-    return;
-  }
-  setsid();
-  int dev = open("/dev/null", O_WRONLY);
-  if (dev >= 0) { dup2(dev, 1); dup2(dev, 2); close(dev); }
-  setenv("DSHCTL_NO_OPEN", "1", 1);
-  setenv("DSHCTL_BYPASS_DAEMON", "1", 1);
-  // dsh 未运行时(唤醒)总是重新挑空闲内部端口:守护已占 DSH_RT_PORT,dsh 必须听别的口
-  char port[16];
-  int p = dsh_up() ? dsh_port : pick_port();
-  if (p > 0) { snprintf(port, sizeof port, "%d", p); setenv("DSH_RT_PORT", port, 1); }
-  execl("/bin/bash", "bash", WRAPPER, arg, (char *)NULL);
-  _exit(127);
-}
-
-/** 重读 dsh.json(启动/停止后端口自动匹配,全链路单一事实源) */
-static void refresh_port(void) { dsh_port = read_state_port(); }
-
 // 挑选空闲端口作为 dsh 内部端口(启动前调用)
 static int pick_port(void) {
   int s = socket(AF_INET, SOCK_STREAM, 0);
@@ -145,6 +142,51 @@ static int pick_port(void) {
   close(s);
   return p;
 }
+
+// ---------- dsh 启停(直启,无 wrapper) ----------
+// 非连接子进程(dsh 本体)不计入活跃连接,否则 waitpid 会把它们误算为连接关闭
+static pid_t spawn_pids[8];
+static int spawn_n = 0;
+static int is_spawn(pid_t p) { for (int i = 0; i < spawn_n; i++) if (spawn_pids[i] == p) return 1; return 0; }
+
+static void spawn_dsh(void) {
+  int port = pick_port();
+  if (port <= 0) return;
+  pid_t pid = fork();
+  if (pid != 0) {
+    if (spawn_n < 8) spawn_pids[spawn_n++] = pid;
+    char j[64]; snprintf(j, sizeof j, "{\"port\":%d}\n", port);
+    int fd = open(DSH_JSON, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd >= 0) { write(fd, j, strlen(j)); close(fd); }
+    char ps[32]; snprintf(ps, sizeof ps, "%d\n", pid);
+    fd = open(PID_FILE, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd >= 0) { write(fd, ps, strlen(ps)); close(fd); }
+    return;
+  }
+  setsid();
+  int lfd = open(LOG_FILE, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+  if (lfd >= 0) { dup2(lfd, 1); dup2(lfd, 2); close(lfd); }
+  setenv("DSH_HOME", DSH_HOME, 1);
+  setenv("DSH_TELEMETRY_DISABLED", "1", 1);
+  char port_s[16]; snprintf(port_s, sizeof port_s, "%d", port);
+  execl(NODE_BIN, "node", DSH_BIN, "web", "--host", "127.0.0.1", "--port", port_s, (char *)NULL);
+  _exit(127);
+}
+
+static void stop_dsh(void) {
+  int pid = read_pid();
+  if (pid > 0) {
+    if (kill(pid, SIGTERM) == 0) {
+      for (int i = 0; i < 30 && kill(pid, 0) == 0; i++) usleep(200000);
+      if (kill(pid, 0) == 0) kill(pid, SIGKILL);
+    }
+  }
+  unlink(DSH_JSON);
+  unlink(PID_FILE);
+}
+
+/** 重读 dsh.json(启动/停止后端口自动匹配,全链路单一事实源) */
+static void refresh_port(void) { dsh_port = read_state_port(); }
 
 // ---------- 引导页(任意路径在 dsh 未运行时都会得到它) ----------
 static const char TPL[] =
@@ -176,7 +218,7 @@ static const char TPL[] =
   "if(!fired){fired=true;$('status').textContent='正在唤醒…';fetch('/wake',{method:'POST'})}"
   "var s=Math.floor((Date.now()-t0)/1000);"
   "$('status').textContent='正在启动 DeepSeek Harness…'+(s>=3?'(已等待 '+s+' 秒)':'');"
-  "if(s>=600){$('err').style.display='block';$('err').textContent='启动超时(超过 10 分钟,首次运行安装可能较慢)。完整日志: '+(document.getElementById('log').textContent);$('retry').style.display='block'}"
+  "if(s>=600){$('err').style.display='block';$('err').textContent='启动超时(超过 10 分钟)。日志: '+document.getElementById('log').textContent;$('retry').style.display='block'}"
   "}).catch(function(){}).then(function(){setTimeout(tick,500)})}"
   "document.addEventListener('DOMContentLoaded',function(){"
   "document.getElementById('retry').onclick=function(){$('err').style.display='none';this.style.display='none';fired=false;t0=Date.now();tick()};tick()})"
@@ -292,10 +334,9 @@ static void handle_conn(int c) {
   if (!up) {
     if (strcmp(path, "/health") == 0) respond_health(c);
     else if (strcmp(method, "POST") == 0 && strcmp(path, "/wake") == 0) {
-      spawn_wrapper("start");
-      respond(c, 200, "application/json", "{\"started\":true}");
+      if (NODE_BIN[0] && DSH_BIN[0]) { spawn_dsh(); respond(c, 200, "application/json", "{\"started\":true}"); }
+      else respond(c, 500, "application/json", "{\"error\":\"runtime not installed\"}");
     } else if (strcmp(method, "POST") == 0 && strcmp(path, "/stop") == 0) {
-      spawn_wrapper("stop");
       respond(c, 200, "application/json", "{\"stopped\":true}");
     } else if (strcmp(path, "/manifest.webmanifest") == 0) respond(c, 200, "application/manifest+json", MANIFEST);
     else respond(c, 200, "text/html; charset=utf-8", BOOT_PAGE);
@@ -306,7 +347,7 @@ static void handle_conn(int c) {
   if (strcmp(path, "/health") == 0) respond_health(c);
   else if (strcmp(method, "POST") == 0 && strcmp(path, "/wake") == 0) respond(c, 200, "application/json", "{\"dsh\":true}");
   else if (strcmp(method, "POST") == 0 && strcmp(path, "/stop") == 0) {
-    spawn_wrapper("stop");
+    stop_dsh();
     respond(c, 200, "application/json", "{\"stopped\":true}");
   } else {
     int u = connect_upstream();
@@ -320,6 +361,7 @@ int main(void) {
   signal(SIGPIPE, SIG_IGN);
   build_paths();
   build_boot();
+  read_run();
   dsh_port = read_state_port();
   if (dsh_port > 0 && !dsh_up()) dsh_port = 0;
 
@@ -342,7 +384,7 @@ int main(void) {
     refresh_port();
     int reaped;
     while ((reaped = waitpid(-1, NULL, WNOHANG)) > 0) {
-      if (is_wrapper(reaped)) continue; // 唤醒/停止子进程不是连接
+      if (is_spawn(reaped)) continue; // dsh 本体退出不是连接
       active--;
       if (active < 0) active = 0;
       last_exit = time(NULL);
@@ -350,7 +392,7 @@ int main(void) {
     // PWA 已关闭(无任何连接)→ 空闲自动停止 dsh
     if (dsh_port > 0 && dsh_up() && active == 0 && time(NULL) - last_exit > IDLE_STOP) {
       fprintf(stderr, "daemon: 空闲 %ds 无连接,停止 dsh\n", IDLE_STOP);
-      spawn_wrapper("stop");
+      stop_dsh();
       dsh_port = 0;
     }
     struct pollfd p;

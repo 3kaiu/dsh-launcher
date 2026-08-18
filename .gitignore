@@ -1,6 +1,2 @@
-node_modules/
-dist/
-.cache/
 .DS_Store
 *.log
-app/

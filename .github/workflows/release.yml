@@ -10,29 +10,30 @@ permissions:
 
 jobs:
   release:
-    name: 构建发行包(dmg 双击版 + 命令行版)
+    name: 构建发行包(install.sh + 预编译 daemon)
     runs-on: macos-14-arm64
-    timeout-minutes: 30
-    # 镜像说明:macos-14 的 hdiutil zlib 压缩率远好于 15/26(macos-latest 实测 186MB vs 140MB),
-    # 用 macos-14-arm64 出包,产物与本地构建一致;若该标签失效会立即失败,换回 macos-latest 即可
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-      - name: 构建(TS 源码 + App + dmg + zip;图标 CDN 实时拉取)
+      - name: 编译守护(arm64,ad-hoc 签名)
+        run: clang -O2 -Wall -Wextra -o /tmp/daemon src/daemon.c && codesign --force -s - /tmp/daemon
+      - name: 打包(install.sh + daemon + daemon.c + plist)
         run: |
-          node scripts/release.ts "${GITHUB_REF_NAME#v}"
-      - name: 发布到 GitHub Releases(仅 dmg;校验清单与命令行 zip 不进发布页)
+          mkdir -p /tmp/pkg/launchd
+          cp /tmp/daemon /tmp/pkg/daemon
+          cp scripts/install.sh /tmp/pkg/install.sh
+          cp src/daemon.c /tmp/pkg/daemon.c
+          cp launchd/com.dshlauncher.daemon.plist /tmp/pkg/launchd/
+          cd /tmp/pkg && zip -qr dsh-launcher.zip .
+      - name: 发布到 GitHub Releases(下载链接)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          cd dist
-          VER="${GITHUB_REF_NAME#v}"
-          gh release create "${{ github.ref_name }}" \
-            "dsh-launcher-$VER.dmg" \
+          cd /tmp/pkg
+          gh release create "${{ github.ref_name }}" dsh-launcher.zip \
             --title "dsh-launcher ${{ github.ref_name }}" \
-            --generate-notes \
-            || gh release upload "${{ github.ref_name }}" \
-              "dsh-launcher-$VER.dmg" --clobber
+            --notes "安装:下载 dsh-launcher.zip → 解压 → bash install.sh
 
+安装后打开 http://127.0.0.1:3080/ → Safari 文件 → 添加到程序坞。
+升级:重跑 install.sh(自动跟随官方 node LTS / dsh latest)。" \
+            || gh release upload "${{ github.ref_name }}" dsh-launcher.zip --clobber
