@@ -30,8 +30,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          cd /tmp/pkg
-          gh release create "${{ github.ref_name }}" dsh-launcher.zip \
+          gh release create "${{ github.ref_name }}" /tmp/pkg/dsh-launcher.zip \
+            --repo "$GITHUB_REPOSITORY" \
             --title "dsh-launcher ${{ github.ref_name }}" \
             --notes-file "$GITHUB_WORKSPACE/.github/RELEASE_NOTES.md" \
-            || gh release upload "${{ github.ref_name }}" dsh-launcher.zip --clobber
+            || gh release upload "${{ github.ref_name }}" /tmp/pkg/dsh-launcher.zip --repo "$GITHUB_REPOSITORY" --clobber
