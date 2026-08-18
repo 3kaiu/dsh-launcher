@@ -11,7 +11,8 @@ permissions:
 jobs:
   release:
     name: 构建发行包(install.sh + 预编译 daemon)
-    runs-on: macos-14-arm64
+    # 仅编译 daemon.c + zip,不依赖 hdiutil/macos-14 镜像;macos-latest 队列更宽裕
+    runs-on: macos-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
