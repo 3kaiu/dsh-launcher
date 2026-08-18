@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-# dsh-launcher 一键安装:运行时(node 最新 LTS + 官方 dsh@latest)+ 守护 + LaunchAgent。
+# dsh-pwa 一键安装:运行时(node 最新 LTS + 官方 dsh@latest)+ 守护 + LaunchAgent。
 # 用法:  bash install.sh          (仓库根 / 发行包根;包内含预编译 daemon 则免 clang)
 # 升级:  重跑本脚本即自动跟随上游最新(已安装版本不变则跳过)
 # 环境:  DSH_RT_HOME DSH_RT_STATE DSH_HOME DSH_RT_PORT(默认 3080) DSH_INSTALL_NO_AGENT(不注册守护,测试用)
@@ -9,10 +9,10 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 [ -d "$ROOT/../scripts" ] && ROOT="$(cd "$ROOT/.." && pwd)"
 # curl ... | bash 场景:无本地伴随文件 → 自动下载最新发行包到临时目录(无需手动下载)
 if [ ! -f "$ROOT/src/daemon.c" ] && [ ! -f "$ROOT/daemon" ]; then
-  echo "== 自动下载发行包(dsh-launcher/releases/latest) =="
-  TMP="$(mktemp -d /tmp/dsh-launcher.XXXXXX)"
+  echo "== 自动下载发行包(dsh-pwa/releases/latest) =="
+  TMP="$(mktemp -d /tmp/dsh-pwa.XXXXXX)"
   curl -fSL --max-time 300 -o "$TMP/pkg.zip" \
-    "https://github.com/3kaiu/dsh-pwa/releases/latest/download/dsh-launcher.zip" \
+    "https://github.com/3kaiu/dsh-pwa/releases/latest/download/dsh-pwa.zip" \
     || { echo "发行包下载失败(仓库尚无 release?)" >&2; exit 1; }
   ( cd "$TMP" && unzip -q pkg.zip )
   rm -f "$TMP/pkg.zip"
@@ -126,20 +126,23 @@ fi
 
 # ---------- 5) LaunchAgent 注册(登录即常驻,1.3MB) ----------
 if [ -z "${DSH_INSTALL_NO_AGENT:-}" ]; then
-  TPL="$ROOT/launchd/com.dshlauncher.daemon.plist"
-  [ -f "$TPL" ] || TPL="$ROOT/com.dshlauncher.daemon.plist"
+  TPL="$ROOT/launchd/com.dshpwa.daemon.plist"
+  [ -f "$TPL" ] || TPL="$ROOT/com.dshpwa.daemon.plist"
   if [ -f "$TPL" ]; then
     echo "== 注册守护(LaunchAgent) =="
     AGENT_DIR="$HOME/Library/LaunchAgents"
-    AGENT="$AGENT_DIR/com.dshlauncher.daemon.plist"
+    AGENT="$AGENT_DIR/com.dshpwa.daemon.plist"
     mkdir -p "$AGENT_DIR"
     sed -e "s|__DAEMON_BIN__|$RT_HOME/daemon|g" \
         -e "s|__RT_HOME__|$RT_HOME|g" \
         -e "s|__RT_STATE__|$RT_STATE|g" \
         -e "s|__LOG_DIR__|$LOG_DIR|g" "$TPL" > "$AGENT"
+    # 清理旧名残留(改名前的 com.dshlauncher.daemon),避免旧守护占住端口
+    launchctl bootout "gui/$(id -u)/com.dshlauncher.daemon" 2>/dev/null || true
+    rm -f "$AGENT_DIR/com.dshlauncher.daemon.plist"
     launchctl bootstrap "gui/$(id -u)" "$AGENT" 2>/dev/null \
-      || launchctl enable "gui/$(id -u)/com.dshlauncher.daemon" 2>/dev/null || true
-    launchctl kickstart -k "gui/$(id -u)/com.dshlauncher.daemon" 2>/dev/null || true
+      || launchctl enable "gui/$(id -u)/com.dshpwa.daemon" 2>/dev/null || true
+    launchctl kickstart -k "gui/$(id -u)/com.dshpwa.daemon" 2>/dev/null || true
   else
     echo "警告: 缺少 plist 模板,未注册守护" >&2
   fi

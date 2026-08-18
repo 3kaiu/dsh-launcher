@@ -11,7 +11,7 @@
   占位符:__DAEMON_BIN__/__RT_HOME__/__RT_STATE__/__LOG_DIR__
 -->
 <dict>
-  <key>Label</key><string>com.dshlauncher.daemon</string>
+  <key>Label</key><string>com.dshpwa.daemon</string>
   <key>ProgramArguments</key>
   <array>
     <string>__DAEMON_BIN__</string>

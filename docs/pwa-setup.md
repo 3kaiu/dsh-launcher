@@ -11,12 +11,12 @@
 curl -fsSL https://raw.githubusercontent.com/3kaiu/dsh-pwa/main/scripts/install.sh | bash
 ```
 
-或从 GitHub Releases 下载 `dsh-launcher.zip` 解压后 `bash install.sh`(离线,含预编译守护)。
+或从 GitHub Releases 下载 `dsh-pwa.zip` 解压后 `bash install.sh`(离线,含预编译守护)。
 
 install.sh 自动完成:
    - 安装运行时到 `~/.local/share/dsh-runtime/`:**nodejs.org 最新 LTS**(SHA-256 校验)+ **官方 dsh@latest**(npm,跟随上游最新)
    - 编译/安装常驻守护(C 二进制 ~1.3MB RSS)
-   - 注册 LaunchAgent(`com.dshlauncher.daemon`,登录即常驻,`launchctl bootout gui/$(id -u)/com.dshlauncher.daemon` 可移除)
+   - 注册 LaunchAgent(`com.dshpwa.daemon`,登录即常驻,`launchctl bootout gui/$(id -u)/com.dshpwa.daemon` 可移除)
 
 然后:
 3. 打开 http://127.0.0.1:3080/ → dsh 自动拉起,首次配置模型 / API Key。
@@ -54,5 +54,5 @@ dsh 的内部端口启动时自动挑选,全链路单一端口 3080,无硬编码
 
 - **点击 PWA 显示"无法连接"**:Safari 恢复了上次会话,点地址栏重新加载或关窗重开。
 - **想改名**:程序坞右键 → 选项 → 在 Finder 中显示,重命名 .app 后重新拖入程序坞。
-- **完全移除**:`launchctl bootout gui/$(id -u)/com.dshlauncher.daemon` + 删除
-  `~/Library/LaunchAgents/com.dshlauncher.daemon.plist` + `rm -rf ~/.local/share/dsh-runtime ~/.local/state/dsh-runtime`。
+- **完全移除**:`launchctl bootout gui/$(id -u)/com.dshpwa.daemon` + 删除
+  `~/Library/LaunchAgents/com.dshpwa.daemon.plist` + `rm -rf ~/.local/share/dsh-runtime ~/.local/state/dsh-runtime`。

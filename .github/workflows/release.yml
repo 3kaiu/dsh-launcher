@@ -24,14 +24,14 @@ jobs:
           cp /tmp/daemon /tmp/pkg/daemon
           cp scripts/install.sh /tmp/pkg/install.sh
           cp src/daemon.c /tmp/pkg/daemon.c
-          cp launchd/com.dshlauncher.daemon.plist /tmp/pkg/launchd/
-          cd /tmp/pkg && zip -qr dsh-launcher.zip .
+          cp launchd/com.dshpwa.daemon.plist /tmp/pkg/launchd/
+          cd /tmp/pkg && zip -qr dsh-pwa.zip .
       - name: 发布到 GitHub Releases(下载链接)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${{ github.ref_name }}" /tmp/pkg/dsh-launcher.zip \
+          gh release create "${{ github.ref_name }}" /tmp/pkg/dsh-pwa.zip \
             --repo "$GITHUB_REPOSITORY" \
-            --title "dsh-launcher ${{ github.ref_name }}" \
+            --title "dsh-pwa ${{ github.ref_name }}" \
             --notes-file "$GITHUB_WORKSPACE/.github/RELEASE_NOTES.md" \
-            || gh release upload "${{ github.ref_name }}" /tmp/pkg/dsh-launcher.zip --repo "$GITHUB_REPOSITORY" --clobber
+            || gh release upload "${{ github.ref_name }}" /tmp/pkg/dsh-pwa.zip --repo "$GITHUB_REPOSITORY" --clobber

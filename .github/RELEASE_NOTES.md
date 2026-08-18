@@ -9,7 +9,7 @@ curl -fsSL https://raw.githubusercontent.com/3kaiu/dsh-pwa/main/scripts/install.
 方式二(手动下载发行包):
 
 ```bash
-curl -LO https://github.com/3kaiu/dsh-pwa/releases/latest/download/dsh-launcher.zip && unzip dsh-launcher.zip && bash install.sh
+curl -LO https://github.com/3kaiu/dsh-pwa/releases/latest/download/dsh-pwa.zip && unzip dsh-pwa.zip && bash install.sh
 ```
 
 安装后打开 http://127.0.0.1:3080/ → Safari 文件 → 添加到程序坞。
