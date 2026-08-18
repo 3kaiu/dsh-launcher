@@ -5,15 +5,20 @@
 
 ## 安装(一次性)
 
-1. 从 GitHub Releases 下载 **dsh-launcher.zip**(CI 自动构建):`https://github.com/3kaiu/dsh-launcher/releases`
-2. 解压后运行:
-   ```bash
-   bash install.sh
-   ```
-   install.sh 自动完成:
+终端运行一条命令(自动下载发行包并安装):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/3kaiu/dsh-launcher/main/scripts/install.sh | bash
+```
+
+或从 GitHub Releases 下载 `dsh-launcher.zip` 解压后 `bash install.sh`(离线,含预编译守护)。
+
+install.sh 自动完成:
    - 安装运行时到 `~/.local/share/dsh-runtime/`:**nodejs.org 最新 LTS**(SHA-256 校验)+ **官方 dsh@latest**(npm,跟随上游最新)
    - 编译/安装常驻守护(C 二进制 ~1.3MB RSS)
    - 注册 LaunchAgent(`com.dshlauncher.daemon`,登录即常驻,`launchctl bootout gui/$(id -u)/com.dshlauncher.daemon` 可移除)
+
+然后:
 3. 打开 http://127.0.0.1:3080/ → dsh 自动拉起,首次配置模型 / API Key。
 4. Safari 菜单栏 **文件 → 添加到程序坞**,应用名 **DeepSeek Harness**。完成。
 

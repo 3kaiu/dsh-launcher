@@ -7,6 +7,17 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 # 仓库内运行(scripts/install.sh)时回溯到仓库根;发行包内运行时本身就是包根
 [ -d "$ROOT/../scripts" ] && ROOT="$(cd "$ROOT/.." && pwd)"
+# curl ... | bash 场景:无本地伴随文件 → 自动下载最新发行包到临时目录(无需手动下载)
+if [ ! -f "$ROOT/src/daemon.c" ] && [ ! -f "$ROOT/daemon" ]; then
+  echo "== 自动下载发行包(dsh-launcher/releases/latest) =="
+  TMP="$(mktemp -d /tmp/dsh-launcher.XXXXXX)"
+  curl -fSL --max-time 300 -o "$TMP/pkg.zip" \
+    "https://github.com/3kaiu/dsh-launcher/releases/latest/download/dsh-launcher.zip" \
+    || { echo "发行包下载失败(仓库尚无 release?)" >&2; exit 1; }
+  ( cd "$TMP" && unzip -q pkg.zip )
+  rm -f "$TMP/pkg.zip"
+  ROOT="$TMP"
+fi
 RT_HOME="${DSH_RT_HOME:-$HOME/.local/share/dsh-runtime}"
 RT_STATE="${DSH_RT_STATE:-$HOME/.local/state/dsh-runtime}"
 DSH_HOME="${DSH_HOME:-$HOME/.dsh}"
