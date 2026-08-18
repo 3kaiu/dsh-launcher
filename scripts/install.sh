@@ -134,20 +134,57 @@ LATEST="$(curl -fsS --max-time 15 https://registry.npmjs.org/@deepseek-ai/dsh/la
   | python3 -c 'import json,sys;print(json.load(sys.stdin)["version"])' 2>/dev/null || true)"
 CUR_DSH="$("$NODE_BIN" -e 'console.log(require(process.argv[1]).version)' "$DSH_PKG" 2>/dev/null || true)"
 if [ -n "$LATEST" ] && [ "$CUR_DSH" != "$LATEST" ] || [ -z "$CUR_DSH" ]; then
-  echo "  ${D}npm install @deepseek-ai/dsh@${LATEST:-latest} ...${R}"
   # 装显式版本号,绕开 npm 本地缓存把 latest 解析成旧版
   printf '{"name":"dsh-runtime-app","private":true,"dependencies":{"@deepseek-ai/dsh":"%s"}}\n' "${LATEST:-latest}" > "$APP_DIR/package.json"
+  # 先解析完整依赖树(锁文件)得到包总数 → 安装阶段数 npm 下载事件,显示真实百分比
+  echo "  ${D}解析依赖树(计算包总数)...${R}"
+  PATH="$NODE_DIR/bin:$PATH" "$NPM_BIN" install --package-lock-only --no-audit --no-fund --loglevel=error --prefix "$APP_DIR" >/dev/null 2>&1 || true
+  NPM_TOTAL="$(python3 -c '
+import json,sys
+try:
+    d=json.load(open(sys.argv[1]))
+    print(max(0, len(d.get("packages", {})) - 1))
+except Exception:
+    print(0)
+' "$APP_DIR/package-lock.json" 2>/dev/null || echo 0)"
+  echo "  ${D}npm install dsh@${LATEST:-latest} (${NPM_TOTAL} 个依赖包) ...${R}"
   NPM_START="$SECONDS"
-  PATH="$NODE_DIR/bin:$PATH" "$NPM_BIN" install --no-audit --no-fund --loglevel=error --prefix "$APP_DIR" >/dev/null 2>&1 &
-  NPM_PID=$!
-  if [ -t 1 ]; then
-    SPIN='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'; i=0
-    while kill -0 "$NPM_PID" 2>/dev/null; do
-      printf "\r  ${D}%s npm install dsh@${LATEST:-latest} ...${R}" "${SPIN:$((i%10)):1}"
-      i=$((i+1)); sleep 0.1
-    done
+  if ! PATH="$NODE_DIR/bin:$PATH" "$NPM_BIN" install --no-audit --no-fund --loglevel=info --prefix "$APP_DIR" 2>&1 \
+    | python3 -c '
+import sys, time
+total = int(sys.argv[1])
+tty = sys.stdout.isatty()
+done = 0; last = 0.0; t0 = time.time(); idle = t0
+for line in sys.stdin:
+    if "http fetch GET 200" in line:
+        done += 1; idle = time.time()
+    elif line.startswith(("npm error", "npm warn", "npm notice")):
+        sys.stderr.write(line)
+    if not tty:
+        continue
+    now = time.time()
+    if now - last < 0.15:
+        continue
+    last = now
+    secs = int(now - t0)
+    if done == 0:
+        sys.stdout.write("\r  等待下载… %ds" % secs)
+    elif now - idle < 2:
+        pct = min(99, int(done * 100 / total)) if total > 0 else 0
+        if total > 0:
+            sys.stdout.write("\r  %3d%%  下载依赖 %d/%d · %ds" % (pct, done, total, secs))
+        else:
+            sys.stdout.write("\r  下载依赖 %d 个 · %ds" % (done, secs))
+    else:
+        sys.stdout.write("\r  100%  下载完成(%d 包) · 安装中(解压/构建脚本) %ds" % (done, secs))
+    sys.stdout.flush()
+if tty:
+    sys.stdout.write("\r  完成\n")
+    sys.stdout.flush()
+' "$NPM_TOTAL"; then
+    warn "dsh 安装失败"
+    exit 1
   fi
-  if ! wait "$NPM_PID"; then warn "dsh 安装失败"; exit 1; fi
   if [ -t 1 ]; then printf "\r  ${G}✓${R} ${D}npm install 完成($(( SECONDS - NPM_START ))s)${R}\n"; fi
   # 剪除运行时永不加载的 sourcemap/文档/测试 与遥测/零引用依赖
   find "$APP_DIR/node_modules" \( -name "*.map" -o -name "*.md" -o -name ".DS_Store" \) -delete 2>/dev/null || true
@@ -184,10 +221,17 @@ if [ -x "$ROOT/daemon" ] && [ "$(file -b "$ROOT/daemon" | grep -c "$(uname -m)")
   cp "$ROOT/daemon" "$RT_HOME/daemon"; install_daemon
   ok "发行包预编译($(uname -m))"
 elif [ -f "$ROOT/src/daemon.c" ] && command -v clang >/dev/null; then
-  echo "  ${D}clang 编译中 ...${R}"
-  clang -O2 -Wall -Wextra -o "$RT_HOME/daemon" "$ROOT/src/daemon.c" || { warn "守护编译失败"; exit 1; }
-  install_daemon
-  ok "本地 clang 编译完成"
+  SRC_MD5="$(md5 -q "$ROOT/src/daemon.c" 2>/dev/null || true)"
+  if [ -x "$RT_HOME/daemon" ] && [ "$SRC_MD5" != "" ] && [ "$SRC_MD5" = "$(cat "$RT_HOME/.daemon.md5" 2>/dev/null || true)" ]; then
+    install_daemon
+    ok "守护已是最新(daemon.c 未变,免编译)"
+  else
+    echo "  ${D}clang 编译中 ...${R}"
+    clang -O2 -Wall -Wextra -o "$RT_HOME/daemon" "$ROOT/src/daemon.c" || { warn "守护编译失败"; exit 1; }
+    [ -n "$SRC_MD5" ] && printf '%s\n' "$SRC_MD5" > "$RT_HOME/.daemon.md5"
+    install_daemon
+    ok "本地 clang 编译完成"
+  fi
 elif [ -x "$RT_HOME/daemon" ]; then
   ok "沿用已安装"
 else
@@ -207,7 +251,8 @@ if [ -z "${DSH_INSTALL_NO_AGENT:-}" ]; then
     sed -e "s|__DAEMON_BIN__|$RT_HOME/daemon|g" \
         -e "s|__RT_HOME__|$RT_HOME|g" \
         -e "s|__RT_STATE__|$RT_STATE|g" \
-        -e "s|__LOG_DIR__|$LOG_DIR|g" "$TPL" > "$AGENT"
+        -e "s|__LOG_DIR__|$LOG_DIR|g" \
+        -e "s|__DSH_RT_PORT__|$PORT|g" "$TPL" > "$AGENT"
     # 清理旧名残留(改名前的 com.dshlauncher.daemon),避免旧守护占住端口
     launchctl bootout "gui/$(id -u)/com.dshlauncher.daemon" 2>/dev/null || true
     rm -f "$AGENT_DIR/com.dshlauncher.daemon.plist"

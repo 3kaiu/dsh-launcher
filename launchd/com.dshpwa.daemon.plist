@@ -7,8 +7,8 @@
   dsh 内部端口启动时自动分配并写入 RT_STATE/dsh.json;运行时位置读 RT_HOME/run.json。
   PWA(程序坞 Web App,start_url 指向本端口)检测到 dsh 未运行 → POST /wake → 守护直启 dsh。
   PWA 关闭 → 连接归零 DSH_RT_IDLE_STOP_SECS(默认 60)秒 → 守护自动停止 dsh。
-  由 scripts/install.sh 自动生成到 ~/Library/LaunchAgents/。
-  占位符:__DAEMON_BIN__/__RT_HOME__/__RT_STATE__/__LOG_DIR__
+   由 scripts/install.sh 自动生成到 ~/Library/LaunchAgents/。
+   占位符:__DAEMON_BIN__/__RT_HOME__/__RT_STATE__/__LOG_DIR__/__DSH_RT_PORT__
 -->
 <dict>
   <key>Label</key><string>com.dshpwa.daemon</string>
@@ -22,7 +22,7 @@
   <dict>
     <key>DSH_RT_HOME</key><string>__RT_HOME__</string>
     <key>DSH_RT_STATE</key><string>__RT_STATE__</string>
-    <key>DSH_RT_PORT</key><string>3080</string>
+    <key>DSH_RT_PORT</key><string>__DSH_RT_PORT__</string>
   </dict>
   <key>StandardOutPath</key><string>__LOG_DIR__/daemon.log</string>
   <key>StandardErrorPath</key><string>__LOG_DIR__/daemon.log</string>

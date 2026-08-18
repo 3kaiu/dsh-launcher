@@ -13,7 +13,6 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <mach-o/dyld.h>
 #include <netinet/in.h>
 #include <poll.h>
 #include <signal.h>
@@ -252,8 +251,9 @@ static void respond(int c, int code, const char *ct, const char *body) {
 
 static void respond_health(int c) {
   char body[128];
+  int up = dsh_up();
   snprintf(body, sizeof body, "{\"dsh\":%s,\"port\":%d,\"pid\":%d}",
-    dsh_up() ? "true" : "false", dsh_port, dsh_up() ? read_pid() : 0);
+    up ? "true" : "false", dsh_port, up ? read_pid() : 0);
   respond(c, 200, "application/json", body);
 }
 
