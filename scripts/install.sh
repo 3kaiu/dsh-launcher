@@ -137,7 +137,18 @@ if [ -n "$LATEST" ] && [ "$CUR_DSH" != "$LATEST" ] || [ -z "$CUR_DSH" ]; then
   echo "  ${D}npm install @deepseek-ai/dsh@${LATEST:-latest} ...${R}"
   # 装显式版本号,绕开 npm 本地缓存把 latest 解析成旧版
   printf '{"name":"dsh-runtime-app","private":true,"dependencies":{"@deepseek-ai/dsh":"%s"}}\n' "${LATEST:-latest}" > "$APP_DIR/package.json"
-  PATH="$NODE_DIR/bin:$PATH" "$NPM_BIN" install --no-audit --no-fund --loglevel=error --prefix "$APP_DIR" >/dev/null
+  NPM_START="$SECONDS"
+  PATH="$NODE_DIR/bin:$PATH" "$NPM_BIN" install --no-audit --no-fund --loglevel=error --prefix "$APP_DIR" >/dev/null 2>&1 &
+  NPM_PID=$!
+  if [ -t 1 ]; then
+    SPIN='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'; i=0
+    while kill -0 "$NPM_PID" 2>/dev/null; do
+      printf "\r  ${D}%s npm install dsh@${LATEST:-latest} ...${R}" "${SPIN:$((i%10)):1}"
+      i=$((i+1)); sleep 0.1
+    done
+  fi
+  if ! wait "$NPM_PID"; then warn "dsh 安装失败"; exit 1; fi
+  if [ -t 1 ]; then printf "\r  ${G}✓${R} ${D}npm install 完成($(( SECONDS - NPM_START ))s)${R}\n"; fi
   # 剪除运行时永不加载的 sourcemap/文档/测试 与遥测/零引用依赖
   find "$APP_DIR/node_modules" \( -name "*.map" -o -name "*.md" -o -name ".DS_Store" \) -delete 2>/dev/null || true
   find "$APP_DIR/node_modules" -type d \( -name test -o -name tests -o -name __tests__ \) -exec rm -rf {} + 2>/dev/null || true
