@@ -259,7 +259,7 @@ static void respond(int c, int code, const char *ct, const char *body) {
   char hdr[256];
   int n = snprintf(hdr, sizeof hdr,
     "HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %zu\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
-    code, code == 200 ? "OK" : "Not Found", ct, strlen(body));
+    code, code == 200 ? "OK" : (code == 502 ? "Bad Gateway" : "Internal Server Error"), ct, strlen(body));
   write(c, hdr, n);
   write(c, body, strlen(body));
 }
@@ -349,14 +349,9 @@ static int http_probe(int port) {
   return strncmp(b, "HTTP/", 5) == 0;
 }
 
-// dsh 是否就绪(能服务 HTTP)。就绪状态按端口缓存:dsh 每次启动只探测一次,就绪后零开销。
-static int dsh_ready(void) {
-  if (dsh_port <= 0) return 0;
-  if (!dsh_up()) return 0;
-  if (ready_port == dsh_port) return 1;
-  if (http_probe(dsh_port)) { ready_port = dsh_port; return 1; }
-  return 0;
-}
+// dsh 是否就绪(能服务 HTTP)。纯缓存读:探测只由主循环做(单一写者,见 main),
+// 连接子进程经 fork 只读继承 —— 避免每个请求各自探测(每次探测 = 一次完整 GET /)。
+static int dsh_ready(void) { return dsh_port > 0 && ready_port == dsh_port; }
 
 // ---------- 单连接处理(fork 出的子进程) ----------
 static void handle_conn(int c) {

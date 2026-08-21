@@ -48,7 +48,8 @@ DSH_PKG="$APP_DIR/node_modules/@deepseek-ai/dsh/package.json"
 ARCH="$(uname -m | sed 's/x86_64/x64/')"
 mkdir -p "$RT_HOME" "$RT_STATE" "$LOG_DIR" "$NODE_DIR" "$APP_DIR" "$DSH_HOME"
 
-# 安装锁(并发互斥:双击连点/重复安装时后到者等待;锁超 10 分钟或属主进程已死则视为残留)
+# 安装锁(并发互斥:双击连点/重复安装时后到者等待;仅属主进程已死才可抢占——
+# 旧逻辑按 10 分钟锁龄抢占活锁,慢网首装实测 >12 分钟,会导致两个安装互相破坏)
 LOCK="$RT_HOME/.install.lock"
 LOCKED=0
 for i in $(seq 1 300); do
@@ -56,7 +57,7 @@ for i in $(seq 1 300); do
     echo "$$" > "$LOCK/pid"; LOCKED=1; break
   fi
   LPID="$(cat "$LOCK/pid" 2>/dev/null || true)"
-  if [ -z "$LPID" ] || ! kill -0 "$LPID" 2>/dev/null || [ -n "$(find "$LOCK" -mmin +10 2>/dev/null)" ]; then
+  if [ -z "$LPID" ] || ! kill -0 "$LPID" 2>/dev/null; then
     rm -rf "$LOCK"; continue
   fi
   sleep 1
@@ -105,10 +106,11 @@ else
       echo "  ${D}下载 node-v$LTS_VER-darwin-$ARCH.tar.gz ...${R}"
       curl -fSL $PB --max-time 900 -o "$TAR" "https://nodejs.org/dist/v$LTS_VER/node-v$LTS_VER-darwin-$ARCH.tar.gz"
     fi
-    if curl -fsS --max-time 60 -o "$CACHE/SHASUMS256.txt" "https://nodejs.org/dist/v$LTS_VER/SHASUMS256.txt" 2>/dev/null; then
-      ( cd "$CACHE" && grep "  node-v$LTS_VER-darwin-$ARCH.tar.gz$" SHASUMS256.txt | shasum -a 256 -c - >/dev/null ) \
-        || { warn "SHA-256 校验失败"; rm -f "$TAR"; exit 1; }
-    fi
+    # 校验 fail-closed:拿不到 SHASUMS 也中止,绝不安装未校验的二进制
+    curl -fsS --max-time 60 -o "$CACHE/SHASUMS256.txt" "https://nodejs.org/dist/v$LTS_VER/SHASUMS256.txt" 2>/dev/null \
+      || { warn "SHASUMS256.txt 下载失败,无法校验 node 安装包"; rm -f "$TAR"; exit 1; }
+    ( cd "$CACHE" && grep "  node-v$LTS_VER-darwin-$ARCH.tar.gz$" SHASUMS256.txt | shasum -a 256 -c - >/dev/null ) \
+      || { warn "SHA-256 校验失败"; rm -f "$TAR"; exit 1; }
     TMP="$(mktemp -d /tmp/dsh-install.XXXXXX)"
     tar -xzf "$TAR" -C "$TMP" --strip-components=1
     rm -rf "$NODE_DIR"
@@ -136,62 +138,17 @@ CUR_DSH="$("$NODE_BIN" -e 'console.log(require(process.argv[1]).version)' "$DSH_
 if [ -n "$LATEST" ] && [ "$CUR_DSH" != "$LATEST" ] || [ -z "$CUR_DSH" ]; then
   # 装显式版本号,绕开 npm 本地缓存把 latest 解析成旧版
   printf '{"name":"dsh-runtime-app","private":true,"dependencies":{"@deepseek-ai/dsh":"%s"}}\n' "${LATEST:-latest}" > "$APP_DIR/package.json"
-  # 先解析完整依赖树(锁文件)得到包总数 → 安装阶段数 npm 下载事件,显示真实百分比
-  echo "  ${D}解析依赖树(计算包总数)...${R}"
-  PATH="$NODE_DIR/bin:$PATH" "$NPM_BIN" install --package-lock-only --no-audit --no-fund --loglevel=error --prefix "$APP_DIR" >/dev/null 2>&1 || true
-  NPM_TOTAL="$(python3 -c '
-import json,sys
-try:
-    d=json.load(open(sys.argv[1]))
-    print(max(0, len(d.get("packages", {})) - 1))
-except Exception:
-    print(0)
-' "$APP_DIR/package-lock.json" 2>/dev/null || echo 0)"
-  echo "  ${D}npm install dsh@${LATEST:-latest} (${NPM_TOTAL} 个依赖包) ...${R}"
+  # npm 自带进度/报错,无需额外包装;同时去除 python3 硬依赖(全新 macOS 无 python3 会卡安装)
+  echo "  ${D}npm install dsh@${LATEST:-latest}(依赖较多,首次约 1~3 分钟)${R}"
   NPM_START="$SECONDS"
-  if ! PATH="$NODE_DIR/bin:$PATH" "$NPM_BIN" install --no-audit --no-fund --loglevel=info --prefix "$APP_DIR" 2>&1 \
-    | python3 -c '
-import sys, time
-total = int(sys.argv[1])
-tty = sys.stdout.isatty()
-done = 0; last = 0.0; t0 = time.time(); idle = t0
-for line in sys.stdin:
-    if "http fetch GET 200" in line:
-        done += 1; idle = time.time()
-    elif line.startswith(("npm error", "npm warn", "npm notice")):
-        sys.stderr.write(line)
-    if not tty:
-        continue
-    now = time.time()
-    if now - last < 0.15:
-        continue
-    last = now
-    secs = int(now - t0)
-    if done == 0:
-        sys.stdout.write("\r  等待下载… %ds" % secs)
-    elif now - idle < 2:
-        pct = min(99, int(done * 100 / total)) if total > 0 else 0
-        if total > 0:
-            sys.stdout.write("\r  %3d%%  下载依赖 %d/%d · %ds" % (pct, done, total, secs))
-        else:
-            sys.stdout.write("\r  下载依赖 %d 个 · %ds" % (done, secs))
-    else:
-        sys.stdout.write("\r  100%  下载完成(%d 包) · 安装中(解压/构建脚本) %ds" % (done, secs))
-    sys.stdout.flush()
-if tty:
-    sys.stdout.write("\r  完成\n")
-    sys.stdout.flush()
-' "$NPM_TOTAL"; then
+  if ! PATH="$NODE_DIR/bin:$PATH" "$NPM_BIN" install --no-audit --no-fund --prefix "$APP_DIR"; then
     warn "dsh 安装失败"
     exit 1
   fi
-  if [ -t 1 ]; then printf "\r  ${G}✓${R} ${D}npm install 完成($(( SECONDS - NPM_START ))s)${R}\n"; fi
-  # 剪除运行时永不加载的 sourcemap/文档/测试 与遥测/零引用依赖
+  ok "npm install 完成($(( SECONDS - NPM_START ))s)"
+  # 剪除 sourcemap/文档/测试(运行时永不加载,纯占空间)
   find "$APP_DIR/node_modules" \( -name "*.map" -o -name "*.md" -o -name ".DS_Store" \) -delete 2>/dev/null || true
   find "$APP_DIR/node_modules" -type d \( -name test -o -name tests -o -name __tests__ \) -exec rm -rf {} + 2>/dev/null || true
-  rm -rf "$APP_DIR/node_modules/@opentelemetry" \
-         "$APP_DIR/node_modules/@deepseek-ai/dsh-session-telemetry-otel" \
-         "$APP_DIR/node_modules/mistralai" 2>/dev/null || true
   CUR_DSH="$("$NODE_BIN" -e 'console.log(require(process.argv[1]).version)' "$DSH_PKG")"
   ok "dsh $CUR_DSH 安装完成"
 else
