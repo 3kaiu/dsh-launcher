@@ -86,6 +86,8 @@ static void read_run(void) {
 
 // ---------- dsh 状态(端口来自 dsh.json,由守护启动 dsh 时写入) ----------
 static int dsh_port = 0;
+static int ready_port = 0;  // 已确认能服务 HTTP 的端口(就绪缓存,就绪后不再探测)
+static int dsh_ready(void); // 前向声明:respond_health 先于其定义处调用
 
 static int read_state_port(void) {
   int fd = open(DSH_JSON, O_RDONLY);
@@ -143,17 +145,22 @@ static int pick_port(void) {
 }
 
 // ---------- dsh 启停(直启,无 wrapper) ----------
-// 非连接子进程(dsh 本体)不计入活跃连接,否则 waitpid 会把它们误算为连接关闭
-static pid_t spawn_pids[8];
-static int spawn_n = 0;
-static int is_spawn(pid_t p) { for (int i = 0; i < spawn_n; i++) if (spawn_pids[i] == p) return 1; return 0; }
+// 非连接子进程(dsh 本体)不计入活跃连接,否则 waitpid 会把它们误算为连接关闭。
+// 只跟踪当前 dsh 子进程:既用于剔除连接计数,也用于 /wake 幂等(在跑/在启动不重复 spawn)。
+static pid_t spawn_pid = 0;
+static int is_spawn(pid_t p) { return p > 0 && p == spawn_pid; }
+// 唤醒请求管道(连接子进程 → 主进程):dsh 统一由主进程 spawn,天然单飞,
+// 且 dsh 成为主进程的子进程可被 waitpid 收尸(连接子进程直接 spawn 会孤儿化)
+static int wake_pipe[2] = { -1, -1 };
 
 static void spawn_dsh(void) {
   int port = pick_port();
   if (port <= 0) return;
   pid_t pid = fork();
-  if (pid != 0) {
-    if (spawn_n < 8) spawn_pids[spawn_n++] = pid;
+  if (pid < 0) return; // fork 失败,不记录,等下一次请求重试
+  if (pid > 0) {
+    spawn_pid = pid;
+    ready_port = 0; // 新 dsh 启动中,就绪缓存作废
     char j[64]; snprintf(j, sizeof j, "{\"port\":%d}\n", port);
     int fd = open(DSH_JSON, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd >= 0) { write(fd, j, strlen(j)); close(fd); }
@@ -170,6 +177,14 @@ static void spawn_dsh(void) {
   char port_s[16]; snprintf(port_s, sizeof port_s, "%d", port);
   execl(NODE_BIN, "node", DSH_BIN, "web", "--host", "127.0.0.1", "--port", port_s, (char *)NULL);
   _exit(127);
+}
+
+// 连接子进程里请求唤醒:只写管道,由主进程统一决定是否 spawn(幂等核心)
+static void request_wake(void) {
+  if (wake_pipe[1] < 0) { spawn_dsh(); return; } // 管道建立失败时退化为直启(旧行为)
+  char b = 1;
+  ssize_t w = write(wake_pipe[1], &b, 1);
+  (void)w; // 管道满/关闭都无妨:主进程按自身状态决定
 }
 
 static void stop_dsh(void) {
@@ -213,12 +228,12 @@ static const char TPL[] =
   "var fired=false,t0=Date.now();"
   "function $(id){return document.getElementById(id)}"
   "function tick(){fetch('/health').then(function(r){return r.json()}).then(function(h){"
-  "if(h.dsh){$('ring').className='ring done';$('status').textContent='已就绪,正在进入…';setTimeout(function(){location.reload()},400);return}"
+  "if(h.dsh){$('ring').className='ring done';$('status').textContent='已就绪,正在进入…';setTimeout(function(){location.reload()},150);return}"
   "if(!fired){fired=true;$('status').textContent='正在唤醒…';fetch('/wake',{method:'POST'})}"
   "var s=Math.floor((Date.now()-t0)/1000);"
   "$('status').textContent='正在启动 DeepSeek Harness…'+(s>=3?'(已等待 '+s+' 秒)':'');"
   "if(s>=600){$('err').style.display='block';$('err').textContent='启动超时(超过 10 分钟)。日志: '+document.getElementById('log').textContent;$('retry').style.display='block'}"
-  "}).catch(function(){}).then(function(){setTimeout(tick,500)})}"
+  "}).catch(function(){}).then(function(){setTimeout(tick,300)})}"
   "document.addEventListener('DOMContentLoaded',function(){"
   "document.getElementById('retry').onclick=function(){$('err').style.display='none';this.style.display='none';fired=false;t0=Date.now();tick()};tick()})"
   "</script></body></html>";
@@ -251,9 +266,10 @@ static void respond(int c, int code, const char *ct, const char *body) {
 
 static void respond_health(int c) {
   char body[128];
-  int up = dsh_up();
+  // 报"就绪"(能服务 HTTP)而非仅"进程活着":引导页据此切换,避免过早 reload 进未就绪的 dsh → PWA 空白
+  int ready = dsh_ready();
   snprintf(body, sizeof body, "{\"dsh\":%s,\"port\":%d,\"pid\":%d}",
-    up ? "true" : "false", dsh_port, up ? read_pid() : 0);
+    ready ? "true" : "false", dsh_port, ready ? read_pid() : 0);
   respond(c, 200, "application/json", body);
 }
 
@@ -308,6 +324,40 @@ static int connect_upstream(void) {
   return -1;
 }
 
+// ---------- HTTP 就绪探测 ----------
+// 仅 TCP connect 成功(dsh_up)不代表 dsh 能服务:dsh 启动时先监听端口、后初始化 HTTP,
+// 这个窗口内透传/刷新就会得到空响应(PWA 空白根因)。真实发一个 GET、收到 HTTP 响应行才算就绪。
+static int http_probe(int port) {
+  int s = socket(AF_INET, SOCK_STREAM, 0);
+  if (s < 0) return 0;
+  struct timeval tv = { 1, 0 };
+  setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+  setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
+  struct sockaddr_in a;
+  memset(&a, 0, sizeof a);
+  a.sin_family = AF_INET;
+  a.sin_port = htons(port);
+  a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  if (connect(s, (struct sockaddr *)&a, sizeof a) != 0) { close(s); return 0; }
+  const char *req = "GET / HTTP/1.0\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
+  write_all(s, req, strlen(req));
+  char b[256];
+  ssize_t n = recv(s, b, sizeof b - 1, 0);
+  close(s);
+  if (n <= 0) return 0;
+  b[n] = 0;
+  return strncmp(b, "HTTP/", 5) == 0;
+}
+
+// dsh 是否就绪(能服务 HTTP)。就绪状态按端口缓存:dsh 每次启动只探测一次,就绪后零开销。
+static int dsh_ready(void) {
+  if (dsh_port <= 0) return 0;
+  if (!dsh_up()) return 0;
+  if (ready_port == dsh_port) return 1;
+  if (http_probe(dsh_port)) { ready_port = dsh_port; return 1; }
+  return 0;
+}
+
 // ---------- 单连接处理(fork 出的子进程) ----------
 static void handle_conn(int c) {
   struct timeval tv = { 2, 0 };
@@ -331,30 +381,35 @@ static void handle_conn(int c) {
   // 每次请求都重读 dsh.json:/wake 拉起 dsh 后端口是守护挑的,停止后文件被删,自动跟随
   refresh_port();
   int up = dsh_up();
-  if (!up) {
-    if (strcmp(path, "/health") == 0) respond_health(c);
-    else if (strcmp(method, "POST") == 0 && strcmp(path, "/wake") == 0) {
-      if (NODE_BIN[0] && DSH_BIN[0]) { spawn_dsh(); respond(c, 200, "application/json", "{\"started\":true}"); }
-      else respond(c, 500, "application/json", "{\"error\":\"runtime not installed\"}");
-    } else if (strcmp(method, "POST") == 0 && strcmp(path, "/stop") == 0) {
-      respond(c, 200, "application/json", "{\"stopped\":true}");
-    } else if (strcmp(path, "/manifest.webmanifest") == 0) respond(c, 200, "application/manifest+json", MANIFEST);
-    else respond(c, 200, "text/html; charset=utf-8", BOOT_PAGE);
+
+  // ---- 控制端点:不依赖就绪状态,守护自身处理 ----
+  if (strcmp(path, "/health") == 0) { respond_health(c); return; }
+  if (strcmp(method, "POST") == 0 && strcmp(path, "/wake") == 0) {
+    if (!NODE_BIN[0] || !DSH_BIN[0]) { respond(c, 500, "application/json", "{\"error\":\"runtime not installed\"}"); return; }
+    if (!up) request_wake(); // 幂等:主进程按 spawn_pid/dsh_up 判定,不重复 spawn
+    respond(c, 200, "application/json", up ? "{\"dsh\":true}" : "{\"started\":true}");
+    return;
+  }
+  if (strcmp(method, "POST") == 0 && strcmp(path, "/stop") == 0) {
+    if (up) stop_dsh();
+    respond(c, 200, "application/json", "{\"stopped\":true}");
     return;
   }
 
-  // dsh 就绪:控制路径仍由守护处理,其余双向透传
-  if (strcmp(path, "/health") == 0) respond_health(c);
-  else if (strcmp(method, "POST") == 0 && strcmp(path, "/wake") == 0) respond(c, 200, "application/json", "{\"dsh\":true}");
-  else if (strcmp(method, "POST") == 0 && strcmp(path, "/stop") == 0) {
-    stop_dsh();
-    respond(c, 200, "application/json", "{\"stopped\":true}");
-  } else {
-    int u = connect_upstream();
-    if (u < 0) { respond(c, 502, "text/plain", "upstream unavailable"); return; }
-    write_all(u, buf, (size_t)blen);
-    relay(c, u);
+  // ---- 未就绪(未启动 / 启动中尚不能服务 HTTP):引导页,绝不透传 → 根治 PWA 空白 ----
+  if (!up || !dsh_ready()) {
+    if (strcmp(path, "/manifest.webmanifest") == 0) { respond(c, 200, "application/manifest+json", MANIFEST); return; }
+    // 页面请求即自动拉起(不再等引导页 JS 的 /wake 往返)→ 启动提速
+    if (!up && NODE_BIN[0] && DSH_BIN[0]) request_wake();
+    respond(c, 200, "text/html; charset=utf-8", BOOT_PAGE);
+    return;
   }
+
+  // ---- 就绪:双向透传 ----
+  int u = connect_upstream();
+  if (u < 0) { respond(c, 502, "text/plain", "upstream unavailable"); return; }
+  write_all(u, buf, (size_t)blen);
+  relay(c, u);
 }
 
 int main(void) {
@@ -365,8 +420,17 @@ int main(void) {
   dsh_port = read_state_port();
   if (dsh_port > 0 && !dsh_up()) dsh_port = 0;
 
+  // 唤醒请求管道(连接子进程写 → 主进程读)。两端均 CLOEXEC:exec 出的 dsh 不继承
+  if (pipe(wake_pipe) == 0) {
+    fcntl(wake_pipe[0], F_SETFL, O_NONBLOCK);
+    fcntl(wake_pipe[1], F_SETFL, O_NONBLOCK);
+    fcntl(wake_pipe[0], F_SETFD, FD_CLOEXEC);
+    fcntl(wake_pipe[1], F_SETFD, FD_CLOEXEC);
+  }
+
   int ls = socket(AF_INET, SOCK_STREAM, 0);
   if (ls < 0) { perror("socket"); return 1; }
+  fcntl(ls, F_SETFD, FD_CLOEXEC); // 主进程 spawn dsh 时不泄漏监听 fd
   int one = 1;
   setsockopt(ls, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
   struct sockaddr_in a;
@@ -384,7 +448,8 @@ int main(void) {
     refresh_port();
     int reaped;
     while ((reaped = waitpid(-1, NULL, WNOHANG)) > 0) {
-      if (is_spawn(reaped)) continue; // dsh 本体退出不是连接
+      // dsh 本体退出(崩溃/被停)不是连接;清 spawn_pid 允许再次唤醒,清就绪缓存
+      if (is_spawn(reaped)) { spawn_pid = 0; ready_port = 0; continue; }
       active--;
       if (active < 0) active = 0;
       last_exit = time(NULL);
@@ -394,21 +459,35 @@ int main(void) {
       fprintf(stderr, "daemon: 空闲 %ds 无连接,停止 dsh\n", IDLE_STOP);
       stop_dsh();
       dsh_port = 0;
+      ready_port = 0;
     }
-    struct pollfd p;
-    p.fd = ls; p.events = POLLIN; p.revents = 0;
-    if (poll(&p, 1, 1000) > 0 && (p.revents & POLLIN)) {
-      int c = accept(ls, NULL, NULL);
-      if (c >= 0) {
-        pid_t pid = fork();
-        if (pid == 0) {
-          close(ls);
-          handle_conn(c);
+    // 就绪推进放主进程:dsh 每次启动只在这里探测成功一次,ready_port 经 fork 传给所有连接子进程
+    // (否则每个连接子进程都会各自探一次,透传期每个请求白白多一次完整 GET /)
+    if (dsh_port > 0 && ready_port != dsh_port && dsh_up() && http_probe(dsh_port)) {
+      ready_port = dsh_port;
+    }
+    struct pollfd pf[2];
+    pf[0].fd = ls; pf[0].events = POLLIN; pf[0].revents = 0;
+    pf[1].fd = wake_pipe[0]; pf[1].events = POLLIN; pf[1].revents = 0;
+    if (poll(pf, wake_pipe[0] >= 0 ? 2 : 1, 1000) > 0) {
+      if (wake_pipe[0] >= 0 && (pf[1].revents & POLLIN)) {
+        char wb;
+        while (read(wake_pipe[0], &wb, 1) > 0) {} // 吸干所有唤醒请求,至多 spawn 一次
+        if (spawn_pid == 0 && !dsh_up() && NODE_BIN[0] && DSH_BIN[0]) spawn_dsh();
+      }
+      if (pf[0].revents & POLLIN) {
+        int c = accept(ls, NULL, NULL);
+        if (c >= 0) {
+          pid_t pid = fork();
+          if (pid == 0) {
+            close(ls);
+            handle_conn(c);
+            close(c);
+            _exit(0);
+          }
           close(c);
-          _exit(0);
+          active++;
         }
-        close(c);
-        active++;
       }
     }
   }
