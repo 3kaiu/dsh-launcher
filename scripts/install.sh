@@ -141,7 +141,7 @@ if [ -n "$LATEST" ] && [ "$CUR_DSH" != "$LATEST" ] || [ -z "$CUR_DSH" ]; then
   # npm 自带进度/报错,无需额外包装;同时去除 python3 硬依赖(全新 macOS 无 python3 会卡安装)
   echo "  ${D}npm install dsh@${LATEST:-latest}(依赖较多,首次约 1~3 分钟)${R}"
   NPM_START="$SECONDS"
-  if ! PATH="$NODE_DIR/bin:$PATH" "$NPM_BIN" install --no-audit --no-fund --prefix "$APP_DIR"; then
+  if ! PATH="$NODE_DIR/bin:$PATH" NODE_OPTIONS="--max-old-space-size=4096" "$NPM_BIN" install --no-audit --no-fund --prefix "$APP_DIR"; then
     warn "dsh 安装失败"
     exit 1
   fi
