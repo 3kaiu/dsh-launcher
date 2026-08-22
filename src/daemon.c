@@ -8,7 +8,6 @@
 //   GET  /health               → {"dsh":bool,"port":int,"pid":int}
 //   POST /wake                 → 未运行则拉起 dsh(直启 node + 官方 dsh web)
 //   POST /stop                 → 停止 dsh(SIGTERM → 超时 SIGKILL)
-//   GET  /manifest.webmanifest → PWA manifest(Safari「添加到程序坞」用;仅 dsh 未运行时有意义)
 // 构建: clang -O2 -o daemon daemon.c(CI/install.sh 编译)
 #include <arpa/inet.h>
 #include <errno.h>
@@ -391,10 +390,11 @@ static void handle_conn(int c) {
     respond(c, 200, "application/json", "{\"stopped\":true}");
     return;
   }
+  // manifest 始终由守护提供(无论 dsh 是否运行,避免 PWA 窗口退化)
+  if (strcmp(path, "/manifest.webmanifest") == 0) { respond(c, 200, "application/manifest+json", MANIFEST); return; }
 
   // ---- 未就绪(未启动 / 启动中尚不能服务 HTTP):引导页,绝不透传 → 根治 PWA 空白 ----
   if (!up || !dsh_ready()) {
-    if (strcmp(path, "/manifest.webmanifest") == 0) { respond(c, 200, "application/manifest+json", MANIFEST); return; }
     // 页面请求即自动拉起(不再等引导页 JS 的 /wake 往返)→ 启动提速
     if (!up && NODE_BIN[0] && DSH_BIN[0]) request_wake();
     respond(c, 200, "text/html; charset=utf-8", BOOT_PAGE);
@@ -438,6 +438,10 @@ int main(void) {
   if (listen(ls, 32) < 0) { perror("listen"); return 1; }
   fprintf(stderr, "dsh-daemon 就绪: http://127.0.0.1:%d/ (PWA 端口;dsh 内部端口自动分配)\n", PORT);
 
+
+  // 预热:登录即拉起 dsh,用户第一次点 PWA 秒开(空闲自停仍生效)
+  // 设 DSH_RT_NO_PREWARM=1 可关闭此行为
+  if (!getenv("DSH_RT_NO_PREWARM") && NODE_BIN[0] && DSH_BIN[0] && dsh_port <= 0) spawn_dsh();
   int active = 0;
   time_t last_exit = time(NULL);
   for (;;) {
