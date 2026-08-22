@@ -255,13 +255,14 @@ static void build_boot(void) {
 }
 
 // ---------- HTTP ----------
+static void write_all(int fd, const char *b, size_t n);
 static void respond(int c, int code, const char *ct, const char *body) {
   char hdr[256];
   int n = snprintf(hdr, sizeof hdr,
     "HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %zu\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
     code, code == 200 ? "OK" : (code == 502 ? "Bad Gateway" : "Internal Server Error"), ct, strlen(body));
-  write(c, hdr, n);
-  write(c, body, strlen(body));
+  write_all(c, hdr, (size_t)n);
+  write_all(c, body, strlen(body));
 }
 
 static void respond_health(int c) {
