@@ -173,6 +173,7 @@ static void spawn_dsh(void) {
   if (lfd >= 0) { dup2(lfd, 1); dup2(lfd, 2); close(lfd); }
   setenv("DSH_HOME", DSH_HOME, 1);
   setenv("DSH_TELEMETRY_DISABLED", "1", 1);
+  setenv("BROWSER", "none", 1); // 阻止 dsh 自动打开浏览器(PWA 已独立窗口,不应再弹浏览器)
   char port_s[16]; snprintf(port_s, sizeof port_s, "%d", port);
   execl(NODE_BIN, "node", DSH_BIN, "web", "--host", "127.0.0.1", "--port", port_s, (char *)NULL);
   _exit(127);
@@ -390,11 +391,10 @@ static void handle_conn(int c) {
     respond(c, 200, "application/json", "{\"stopped\":true}");
     return;
   }
-  // manifest 始终由守护提供(无论 dsh 是否运行,避免 PWA 窗口退化)
-  if (strcmp(path, "/manifest.webmanifest") == 0) { respond(c, 200, "application/manifest+json", MANIFEST); return; }
-
   // ---- 未就绪(未启动 / 启动中尚不能服务 HTTP):引导页,绝不透传 → 根治 PWA 空白 ----
   if (!up || !dsh_ready()) {
+    // dsh 自带 manifest(含图标/scope/service worker),守护仅在引导阶段提供
+    if (strcmp(path, "/manifest.webmanifest") == 0) { respond(c, 200, "application/manifest+json", MANIFEST); return; }
     // 页面请求即自动拉起(不再等引导页 JS 的 /wake 往返)→ 启动提速
     if (!up && NODE_BIN[0] && DSH_BIN[0]) request_wake();
     respond(c, 200, "text/html; charset=utf-8", BOOT_PAGE);
