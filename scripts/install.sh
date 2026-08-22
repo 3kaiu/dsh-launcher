@@ -138,10 +138,12 @@ CUR_DSH="$("$NODE_BIN" -e 'console.log(require(process.argv[1]).version)' "$DSH_
 if [ -n "$LATEST" ] && [ "$CUR_DSH" != "$LATEST" ] || [ -z "$CUR_DSH" ]; then
   # 装显式版本号,绕开 npm 本地缓存把 latest 解析成旧版
   printf '{"name":"dsh-runtime-app","private":true,"dependencies":{"@deepseek-ai/dsh":"%s"}}\n' "${LATEST:-latest}" > "$APP_DIR/package.json"
+  # 发行包含预解析的 package-lock.json → npm install 跳过依赖解析,省 30~60s
+  [ -f "$ROOT/package-lock.json" ] && cp "$ROOT/package-lock.json" "$APP_DIR/"
   # npm 自带进度/报错,无需额外包装;同时去除 python3 硬依赖(全新 macOS 无 python3 会卡安装)
-  echo "  ${D}npm install dsh@${LATEST:-latest}(依赖较多,首次约 1~3 分钟)${R}"
+  echo "  ${D}npm install dsh@${LATEST:-latest}(451 个依赖,首次约 3~10 分钟视网络)${R}"
   NPM_START="$SECONDS"
-  if ! PATH="$NODE_DIR/bin:$PATH" NODE_OPTIONS="--max-old-space-size=4096" "$NPM_BIN" install --no-audit --no-fund --prefix "$APP_DIR"; then
+  if ! PATH="$NODE_DIR/bin:$PATH" NODE_OPTIONS="--max-old-space-size=4096" "$NPM_BIN" install --prefer-offline --no-audit --no-fund --prefix "$APP_DIR"; then
     warn "dsh 安装失败"
     exit 1
   fi

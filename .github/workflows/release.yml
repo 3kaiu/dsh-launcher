@@ -13,12 +13,20 @@ jobs:
     name: 构建发行包(install.sh + 预编译 daemon)
     # 仅编译 daemon.c + zip,不依赖 hdiutil/macos-14 镜像;macos-latest 队列更宽裕
     runs-on: macos-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - name: 编译守护(arm64,ad-hoc 签名)
         run: clang -O2 -Wall -Wextra -o /tmp/daemon src/daemon.c && codesign --force -s - /tmp/daemon
-      - name: 打包(install.sh + daemon + daemon.c + plist)
+      - name: 生成 package-lock.json(预解析依赖树,用户安装跳过解析省 30~60s)
+        run: |
+          LATEST=$(npm view @deepseek-ai/dsh version 2>/dev/null || echo "latest")
+          mkdir -p /tmp/dsh-lock
+          echo '{"dependencies":{"@deepseek-ai/dsh":"'$LATEST'"}}' > /tmp/dsh-lock/package.json
+          cd /tmp/dsh-lock && npm install --package-lock-only --no-audit --no-fund --loglevel=error
+          mkdir -p /tmp/pkg
+          cp /tmp/dsh-lock/package-lock.json /tmp/pkg/package-lock.json
+      - name: 打包(install.sh + daemon + daemon.c + plist + lock)
         run: |
           mkdir -p /tmp/pkg/launchd
           cp /tmp/daemon /tmp/pkg/daemon
